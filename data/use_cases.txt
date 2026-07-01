@@ -1,0 +1,53 @@
+# 文件標題：Aegis Knowledge Core - 使用案例與 Demo 腳本
+
+## metadata
+source_type: project_document
+domain: use_cases
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: Use Case, Demo Script, Enterprise AI, RAG, FAQ, Knowledge Search
+
+## summary
+這份文件整理 Aegis Knowledge Core 的使用情境、技術展示流程、適合提問的查詢範例，以及企業可以如何把此 Demo 延伸成正式內部知識庫。
+
+## key_points
+- 適合企業內部知識庫、客服 FAQ、技術文件搜尋、專案規格查詢與新人訓練。
+- 技術展示時可以先展示 ingest，再展示 Streamlit 查詢與 Local LLM RAG。
+- Demo 可回答產品定位、商業價值、技術架構、技術棧與使用案例問題。
+- 使用者可以打開 Evidence 與 RAG Prompt，確認回答有根據檢索內容。
+- 未來可加入 PDF、Notion、Confluence、權限控管與 reranker。
+
+## content
+
+### 1. 企業內部知識庫
+企業可以將 SOP、技術文件、專案規格、客服 FAQ 與產品說明放入 `data/`，透過 ingest 建立 Chroma index。員工之後可以用自然語言提問，系統會回傳最相關的文件片段與 LLM 整理後的回答。
+
+### 2. 客服 FAQ 查詢
+客服團隊可以將常見問題與標準回覆整理成結構化文件。當客服人員輸入客戶問題時，系統可以檢索相似 FAQ，並用 LLM 生成可讀性更高的建議回答，同時保留來源。
+
+### 3. 技術文件搜尋
+工程團隊可以用此系統查詢架構文件、安裝流程、部署方式、錯誤處理與 API 說明。相較傳統搜尋，RAG 可以找到語意相近的段落，降低文件命名不一致造成的搜尋困難。
+
+### 4. 新人教育訓練
+新人可以詢問「這個專案架構是什麼」、「如何啟動 Demo」、「Chroma 的用途是什麼」、「LangGraph 節點有哪些」。系統會從整理好的專案文件中取回內容，幫助新人快速理解系統。
+
+### 5. 技術 Demo 腳本
+技術展示可以依序執行：打開 `data/` 說明文件格式；執行 `python -m app.ingest` 重建 Chroma；執行 `streamlit run app/demo.py` 啟動 UI；開啟 Ollama generation；輸入問題；展示 Answer Mode、Evidence、RAG Prompt 與 Vector Map；最後打開 `app/rag_graph.py` 說明節點設計。
+
+### 6. 建議查詢問題
+適合 Demo 的問題包含：「Aegis Knowledge Core 可以解決什麼問題？」、「這個專案用了哪些技術？」、「LangGraph 在這個專案中負責什麼？」、「Chroma 在系統中的用途是什麼？」、「如果 Ollama 沒有啟動會怎麼辦？」。
+
+## qa_examples
+
+### Q: 這個系統適合哪些使用情境？
+A: 適合企業內部知識庫、客服 FAQ、技術文件搜尋、專案規格查詢、新人訓練與跨部門知識管理。
+
+### Q: 應該怎麼展示這個專案？
+A: 可以先展示 `data/` 文件格式，再執行 ingest，接著用 Streamlit 查詢，開啟 Local LLM RAG，最後展示 Evidence、RAG Prompt、Vector Map 與 LangGraph 程式碼。
+
+### Q: 有哪些推薦 Demo 問題？
+A: 可以問「這個專案用了哪些技術？」、「Chroma 做什麼？」、「LangGraph 管理哪些流程？」、「本機 LLM 如何產生回答？」。
+
+## retrieval_notes
+這份文件適合回答與使用案例、Demo 腳本、技術展示流程、查詢範例、企業情境、客服 FAQ、新人訓練、技術文件搜尋有關的問題。

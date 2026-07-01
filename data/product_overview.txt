@@ -1,0 +1,47 @@
+# 文件標題：Aegis Knowledge Core - 產品總覽
+
+## metadata
+source_type: project_document
+domain: product_overview
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: RAG, Knowledge Base, LangChain, LangGraph, Chroma, Ollama, Streamlit
+
+## summary
+Aegis Knowledge Core 是一個本機可執行的企業 AI 知識庫 Demo，用來展示如何把本地文件轉成可查詢的向量資料庫，並透過 LangGraph 與本機 LLM 產生具備來源依據的回答。
+
+## key_points
+- 產品定位是本機版 RAG 知識庫助理。
+- 使用者可以用自然語言查詢專案文件、技術說明、使用案例與商業價值。
+- 文件會被切分成 chunks，轉成 embeddings，並儲存在 Chroma。
+- 查詢流程由 LangGraph 管理，回答可以由 Ollama 本機 LLM 生成。
+- Demo 不需要 OpenAI API key，也不需要外部資料庫服務。
+
+## content
+
+### 1. 產品定位
+Aegis Knowledge Core 是一個面向企業知識管理與技術展示的 AI 知識中樞。它將本地資料夾 `data/` 內的純文字文件轉換成向量知識庫，讓使用者可以透過自然語言查詢專案內容，而不是靠檔名或關鍵字搜尋。
+
+### 2. 主要功能
+系統支援文件匯入、文件切分、embedding 產生、Chroma 向量儲存、語意相似度檢索、LangGraph 查詢流程、本機 LLM 回答、來源引用與 Streamlit 視覺化展示。使用者可以在瀏覽器中看到回答、Evidence、RAG Prompt 與 Chroma Vector Map。
+
+### 3. 使用方式
+使用者先執行 `python -m app.ingest` 匯入文件，再執行 `streamlit run app/demo.py` 啟動網頁 Demo。若本機已安裝 Ollama 並下載 `llama3.2:3b`，系統可以使用本機 LLM 生成回答；若 LLM 尚未就緒，系統會自動 fallback 到 extractive RAG。
+
+### 4. 解決的問題
+此專案解決企業文件分散、搜尋成本高、知識難以重複利用、新人不易上手、技術展示缺少可操作 AI Demo 等問題。它把靜態文字轉成可查詢、可視覺化、可擴充的 AI 知識資產。
+
+## qa_examples
+
+### Q: Aegis Knowledge Core 是什麼？
+A: Aegis Knowledge Core 是一個本機可執行的 RAG 知識庫 Demo，使用 LangChain、LangGraph、Chroma、Ollama 與 Streamlit 建立可查詢的 AI 知識中樞。
+
+### Q: 這個專案可以解決什麼問題？
+A: 它可以降低企業內部知識搜尋成本，讓分散文件變成可查詢的向量知識庫，並用本機 LLM 根據檢索結果產生具來源依據的回答。
+
+### Q: 這個 Demo 是否需要 OpenAI API key？
+A: 不需要。它預設使用 HuggingFace embedding model 與 Ollama 本機 LLM，因此可以在 MacBook 上本機啟動展示。
+
+## retrieval_notes
+這份文件適合回答與產品定位、主要功能、系統用途、Demo 目標、RAG 知識庫助理、自然語言查詢、企業 AI 知識中樞有關的問題。

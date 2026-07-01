@@ -1,0 +1,42 @@
+# macOS
+.DS_Store
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment and secrets
+.env
+.env.*
+.streamlit/secrets.toml
+
+# Generated RAG / vector database artifacts
+chroma_db/
+*.sqlite3
+*.sqlite
+
+# Local model/cache artifacts
+.hf-cache/
+models/
+model_cache/
+.cache/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Build and logs
+build/
+dist/
+*.egg-info/
+logs/
+*.log

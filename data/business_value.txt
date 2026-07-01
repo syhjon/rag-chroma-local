@@ -1,0 +1,50 @@
+# 文件標題：Aegis Knowledge Core - 商業價值
+
+## metadata
+source_type: project_document
+domain: business_value
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: Business Value, Enterprise AI, RAG, Knowledge Management, Technical Showcase
+
+## summary
+這份文件說明 Aegis Knowledge Core 的商業價值，包含企業導入價值、專案展示亮點、技術決策價值，以及為什麼 RAG 知識庫能改善傳統文件搜尋流程。
+
+## key_points
+- 降低企業內部知識搜尋成本。
+- 提升文件再利用率與知識傳承效率。
+- 幫助新人更快理解專案、SOP 與技術文件。
+- 展示完整整合 LangChain、LangGraph、Chroma 與本機 LLM 的能力。
+- 可作為企業內部 AI 助理、客服 FAQ、技術支援或知識管理系統原型。
+
+## content
+
+### 1. 企業導入價值
+企業內部常見問題是文件散落在不同資料夾、Wiki、PDF、Slack 或專案文件中。Aegis Knowledge Core 展示如何將這些內容轉成可搜尋的向量知識庫，讓使用者可以用自然語言提問，快速找到最相關的文件片段。
+
+### 2. 相較傳統搜尋的優勢
+傳統關鍵字搜尋需要使用者知道正確詞彙，RAG 向量搜尋則能理解語意相似度。即使使用者沒有輸入完全相同的字，Chroma 仍能根據 embedding 找到接近內容，並交給 LLM 整理成自然語言回答。
+
+### 3. 對技術展示的價值
+此專案可以展示完整 RAG 流程：資料整理、chunking、embedding、vector store、retriever、LangGraph orchestration、LLM answer generation、citation 與 Streamlit demo UI，而不只是單純呼叫 LLM API。
+
+### 4. 對專案介紹的價值
+專案可以描述為「建置本機 RAG 知識庫 Demo，整合 LangChain、LangGraph、Chroma、HuggingFace Embeddings、Ollama Local LLM 與 Streamlit，支援文件向量化、語意檢索、來源引用與視覺化展示」。
+
+### 5. 未來商業延伸
+未來可以加入權限控管、文件版本管理、PDF loader、Notion connector、Confluence connector、reranker、評測集、回饋紀錄與公司內部 LLM，進一步變成可部署的企業 AI 知識管理系統。
+
+## qa_examples
+
+### Q: 這個專案的商業價值是什麼？
+A: 它能降低企業知識搜尋成本，提升文件再利用率，並將內部文件轉換成可查詢、可追蹤來源的 AI 知識資產。
+
+### Q: 為什麼這個 Demo 適合技術展示？
+A: 因為它展示完整 RAG 工程能力，包含資料匯入、embedding、Chroma、LangGraph、本機 LLM、來源引用與 Streamlit 互動介面。
+
+### Q: 企業可以如何延伸這個系統？
+A: 企業可以加入權限控管、PDF 或 Wiki 文件來源、reranker、LLM 評測、公司內部模型與部署流程，形成正式內部知識庫助理。
+
+## retrieval_notes
+這份文件適合回答與商業價值、企業導入、專案亮點、技術展示、RAG 相較傳統搜尋的優勢、AI 知識管理投資價值有關的問題。

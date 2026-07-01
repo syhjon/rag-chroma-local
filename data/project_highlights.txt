@@ -1,0 +1,51 @@
+# 文件標題：Aegis Knowledge Core - 專案亮點
+
+## metadata
+source_type: project_highlights
+domain: technical_showcase
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: Project Highlights, LangChain, LangGraph, Chroma, RAG, Local LLM, Technical Showcase
+
+## summary
+這份文件整理 Aegis Knowledge Core 的專案亮點與技術展示重點，強調系統具備完整 RAG 工程實作能力。
+
+## key_points
+- 展示從資料處理到 LLM 回答的完整 RAG pipeline。
+- 展示 LangGraph workflow design 能力。
+- 展示 Chroma 向量資料庫與 embedding 檢索能力。
+- 展示本機 Ollama LLM 整合能力，不依賴外部 API key。
+- 展示 Streamlit Demo、來源引用、RAG Prompt 與向量視覺化能力。
+
+## content
+
+### 1. 專案一句話
+Aegis Knowledge Core 是一個本機 RAG 知識庫 Demo，整合 LangChain、LangGraph、ChromaDB、HuggingFace Embeddings、Ollama Local LLM 與 Streamlit，支援文件向量化、語意檢索、來源引用、RAG Prompt 展示與 embedding 視覺化。
+
+### 2. 技術亮點條列
+- 使用 LangChain 建立文件載入、文字切分、embedding 與 Chroma vector store 流程。
+- 使用 LangGraph 將 RAG 查詢拆成 retrieval、context selection、prompt building 與 local LLM generation 節點。
+- 使用 ChromaDB 作為本機 persistent vector database。
+- 使用 Ollama 與 `langchain-ollama` 在本機生成 RAG 回答。
+- 使用 Streamlit 建立可互動 Demo，展示 Answer Mode、Evidence、RAG Prompt 與 Vector Map。
+
+### 3. 專案介紹說法
+這個專案不是只呼叫 LLM API，而是做出完整的本機 RAG workflow。資料從 `data/` 匯入後會被切成 chunks，轉成 embeddings 存入 Chroma；查詢時 LangGraph 會管理檢索、整理 context、建立 RAG prompt，最後交給 Ollama 本機 LLM 生成回答並保留來源。
+
+### 4. 可延伸能力
+此專案可以延伸成企業內部知識庫、客服 FAQ 助理、技術文件搜尋或專案 onboarding assistant。未來可加入 PDF loader、Notion connector、權限控管、reranker、evaluation dataset 與部署流程。
+
+## qa_examples
+
+### Q: 這個專案可以怎麼介紹？
+A: 可以介紹為「建置本機 RAG 知識庫 Demo，整合 LangChain、LangGraph、ChromaDB、HuggingFace Embeddings、Ollama Local LLM 與 Streamlit，支援語意檢索與來源引用」。
+
+### Q: 這個專案展示了哪些能力？
+A: 展示資料整理、embedding、vector database、LangGraph workflow、本機 LLM 整合、RAG prompt 設計、fallback 與 Streamlit 展示能力。
+
+### Q: 為什麼做這個專案？
+A: 這個專案用來展示如何把 LLM、向量資料庫與 workflow orchestration 串成可操作產品，而不是只停留在 API 呼叫或概念說明。
+
+## retrieval_notes
+這份文件適合回答與專案介紹、技術亮點、架構說明、RAG 工程能力、本機 LLM 整合與可延伸方向有關的問題。

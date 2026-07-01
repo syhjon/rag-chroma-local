@@ -1,0 +1,56 @@
+# 文件標題：Aegis Knowledge Core - 疑難排解
+
+## metadata
+source_type: troubleshooting
+domain: developer_operations
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: Troubleshooting, Installation, Ollama, Chroma, HuggingFace, torchvision, MacBook
+
+## summary
+這份文件整理本專案在 MacBook 啟動、embedding 模型、Ollama 本機 LLM、Chroma index 與 Python 套件安裝時可能遇到的問題與解法。
+
+## key_points
+- 若 Chroma 查不到資料，請重新執行 `python -m app.ingest`。
+- 若 Local LLM 未就緒，請確認 Ollama service 與模型。
+- 若 HuggingFace 模型第一次下載很慢，屬於正常情況。
+- 若出現 `ModuleNotFoundError: No module named 'torchvision'`，可安裝 torchvision 或改用較穩定的 embedding 流程。
+- 若 Streamlit 找不到套件，通常是沒有啟用 `.venv`。
+
+## content
+
+### 1. Chroma 查不到資料
+若 Streamlit 顯示 Chroma 沒有資料，請確認 `data/` 內有 `.txt` 文件，並執行 `python -m app.ingest` 重建 index。重建後再重新整理 Streamlit 頁面，或點 sidebar 的 Rebuild Chroma Index。
+
+### 2. Local LLM 未就緒
+若 sidebar 顯示 Ollama server 無法連線，請執行 `brew services start ollama`。若顯示模型不存在，請執行 `ollama pull llama3.2:3b`。確認模型清單可用 `ollama list`。
+
+### 3. HuggingFace embedding 下載
+第一次執行 ingest 或 query 時，HuggingFace embedding model 需要下載到 `.hf-cache/`。下載完成後，後續會優先使用本機 cache。若收件人的 MacBook 現場網路不穩，可以事先把 `.hf-cache/` 一起交付。
+
+### 4. torchvision 錯誤
+若終端機出現 `ModuleNotFoundError: No module named 'torchvision'`，可能是某些模型 pipeline 需要 torchvision。可先嘗試執行 `pip install torchvision`。如果是在 Apple Silicon Mac，也可以考慮改用 Ollama embedding model，例如先執行 `ollama pull nomic-embed-text`，再調整程式避免走到需要 torchvision 的 pipeline。
+
+### 5. Streamlit 套件錯誤
+若執行 `streamlit run app/demo.py` 時找不到套件，請確認已啟用虛擬環境：`source .venv/bin/activate`。再執行 `which streamlit`，路徑應指向專案底下的 `.venv/bin/streamlit`。
+
+### 6. Chroma compactor 或 database lock
+若同時重建 Chroma index 並執行查詢，可能遇到 Chroma database lock 或 compactor 錯誤。請避免一邊 ingest 一邊 query。建議先完成 `python -m app.ingest`，再啟動 Streamlit 或 CLI 查詢。
+
+## qa_examples
+
+### Q: Chroma 沒有資料怎麼辦？
+A: 請確認 `data/` 內有 `.txt` 文件，然後執行 `python -m app.ingest` 重建 Chroma index。
+
+### Q: Local LLM 顯示未就緒怎麼辦？
+A: 請執行 `brew services start ollama` 啟動 Ollama，並用 `ollama pull llama3.2:3b` 下載預設模型。
+
+### Q: 出現 torchvision 找不到模組怎麼辦？
+A: 可以先執行 `pip install torchvision`。若仍不穩，可以改用不依賴 torchvision 的 embedding 或 Ollama embedding 流程。
+
+### Q: 為什麼第一次啟動很慢？
+A: 第一次需要下載 HuggingFace embedding model 或 Ollama LLM model。下載完成後會存在本機，後續啟動會快很多。
+
+## retrieval_notes
+這份文件適合回答與錯誤處理、安裝問題、Chroma 查不到資料、Ollama 未啟動、HuggingFace 下載、torchvision 錯誤、Streamlit 套件問題有關的問題。

@@ -1,0 +1,58 @@
+# 文件標題：Aegis Knowledge Core - 技術棧
+
+## metadata
+source_type: project_document
+domain: technical_stack
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: Python, LangChain, LangGraph, ChromaDB, HuggingFace, Ollama, Streamlit, Plotly, scikit-learn
+
+## summary
+這份文件整理本專案使用的技術棧，說明每個技術元件在 RAG Demo 中扮演的角色，以及為什麼這些工具適合用於技術展示與本機 AI 知識庫。
+
+## key_points
+- Python 是主要開發語言。
+- LangChain 負責文件處理、embedding 與 vector store 整合。
+- LangGraph 負責 workflow orchestration。
+- ChromaDB 是本機向量資料庫。
+- HuggingFace Embeddings 提供多語 embedding。
+- Ollama 與 ChatOllama 提供本機 LLM 生成回答。
+- Streamlit、Plotly、PCA 提供互動展示與向量視覺化。
+
+## content
+
+### 1. Python
+Python 是專案主要語言，負責資料匯入、向量化、Chroma 建庫、LangGraph workflow、CLI 查詢與 Streamlit UI。專案建議使用 Python 3.12 與 `.venv` 虛擬環境，方便在 MacBook 上重現。
+
+### 2. LangChain
+LangChain 在本專案中負責串接文件物件、text splitter、embedding model 與 Chroma vector store。`app.ingest` 使用 LangChain document 與 RecursiveCharacterTextSplitter 將文件切成適合檢索的 chunks。
+
+### 3. LangGraph
+LangGraph 用來定義 RAG 查詢流程，讓程式不是單純函式串接，而是具備明確節點與狀態傳遞的 workflow。這能展示對 agentic workflow、流程編排與可擴充架構的理解。
+
+### 4. ChromaDB
+ChromaDB 是本機 persistent vector database，用來保存文件 chunks、metadata 與 embeddings。它適合 Demo，因為不需要額外啟動資料庫服務，資料會寫入 `chroma_db/`，複製專案後即可重建或查詢。
+
+### 5. HuggingFace Embeddings
+專案使用 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` 作為 embedding model，支援中文與英文內容。模型下載後會存在 `.hf-cache/`，後續可優先使用本機 cache，降低現場 Demo 的網路依賴。
+
+### 6. Ollama Local LLM
+Ollama 提供本機 LLM runtime。專案預設使用 `llama3.2:3b`，並透過 `langchain-ollama` 的 `ChatOllama` 生成 RAG 回答。這讓 Demo 可以展示 LLM generation 能力，而不需要 OpenAI API key。
+
+### 7. Streamlit 與 Plotly
+Streamlit 負責建立瀏覽器介面，展示查詢問題、Answer Mode、LLM 狀態、Evidence 與 RAG Prompt。Plotly 搭配 scikit-learn PCA，將 Chroma 中的高維 embeddings 壓縮成 2D scatter plot，協助使用者理解語意向量分布。
+
+## qa_examples
+
+### Q: 這個專案用了哪些技術？
+A: 專案使用 Python、LangChain、LangGraph、ChromaDB、HuggingFace Embeddings、Ollama、Streamlit、Plotly 與 scikit-learn。
+
+### Q: ChromaDB 在專案中扮演什麼角色？
+A: ChromaDB 是本機向量資料庫，用來保存文件 chunks、metadata 與 embeddings，並在查詢時進行 similarity search。
+
+### Q: 為什麼使用 Ollama？
+A: Ollama 可以在本機執行 LLM，讓 Demo 不依賴外部 API key，適合在收件人的 MacBook 自行啟動。
+
+## retrieval_notes
+這份文件適合回答與技術棧、套件用途、LangChain、LangGraph、ChromaDB、HuggingFace Embeddings、Ollama、Streamlit、Plotly、PCA 有關的問題。

@@ -1,0 +1,50 @@
+# 文件標題：Aegis Knowledge Core - 系統架構
+
+## metadata
+source_type: project_document
+domain: software_architecture
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: LangChain, LangGraph, Chroma, RAG, Local LLM, Ollama, Streamlit
+
+## summary
+這份文件說明 Aegis Knowledge Core 的技術架構，包含資料匯入、文字切分、embedding、Chroma 儲存、LangGraph 查詢流程、本機 LLM 回答與 Streamlit 展示。
+
+## key_points
+- `app.ingest` 負責讀取 `data/*.txt`、切分文件並建立 Chroma index。
+- Chroma 是本機 persistent vector database，用來保存文件內容、metadata 與 embeddings。
+- LangGraph 定義查詢流程節點，讓 retrieval、prompt building 與 LLM generation 可以清楚分工。
+- Ollama 提供本機 LLM 生成能力，不需要外部 API key。
+- Streamlit 展示查詢結果、Evidence、RAG Prompt、Answer Mode 與向量分布圖。
+
+## content
+
+### 1. 整體資料流
+系統資料流從 `data/` 目錄開始。使用者將結構化純文字文件放入 `data/`，執行 `python -m app.ingest` 後，LangChain document splitter 會將文件切成適合 embedding 的 chunks，接著使用 HuggingFace embedding model 產生向量，最後寫入 Chroma。
+
+### 2. 查詢流程
+使用者在 Streamlit 或 CLI 輸入問題後，系統會將問題轉成 embedding，透過 Chroma similarity search 找出最相關的 chunks。取回的 chunks 會進入 LangGraph 流程，依序完成排序、上下文選擇、RAG prompt 組裝與回答生成。
+
+### 3. LangGraph 節點設計
+目前 LangGraph 包含四個主要節點：`retrieve_from_chroma`、`rank_and_select_context`、`build_rag_prompt`、`generate_with_local_llm`。這種設計讓每個步驟可獨立測試，也方便未來加入 reranker、query rewriting、guardrails 或 human-in-the-loop。
+
+### 4. Local LLM 與 fallback
+`generate_with_local_llm` 會先檢查 Ollama server 與指定模型是否可用。若 `llama3.2:3b` 已安裝，系統會使用 LangChain `ChatOllama` 生成回答；若 Ollama 未啟動或模型不存在，系統會自動 fallback 到 extractive RAG，避免 Demo 中斷。
+
+### 5. 展示層
+Streamlit UI 顯示知識庫統計、LLM 狀態、Answer Mode、Evidence、RAG Prompt、Chroma Vector Map 與 indexed chunks。Plotly 與 PCA 會將高維 embedding 壓縮成 2D 圖，讓使用者直觀看到向量資料在語意空間中的分布。
+
+## qa_examples
+
+### Q: Aegis Knowledge Core 的核心架構是什麼？
+A: 核心架構包含資料匯入層、embedding 層、Chroma vector store、LangGraph 查詢流程、本機 Ollama LLM 與 Streamlit 展示層。
+
+### Q: LangGraph 在這個專案中做什麼？
+A: LangGraph 負責管理查詢流程，將 retrieval、context selection、prompt building 與 local LLM generation 拆成清楚的節點。
+
+### Q: 如果 Ollama 沒有啟動會怎麼樣？
+A: 系統會顯示 Local LLM 未就緒，並自動 fallback 到 extractive RAG，仍然可以根據 Chroma 取回的內容回答。
+
+## retrieval_notes
+這份文件適合回答與系統架構、資料流、LangGraph 節點、Chroma 儲存、Ollama、本機 LLM、Streamlit 展示、RAG pipeline 有關的問題。

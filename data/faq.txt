@@ -1,0 +1,51 @@
+# 文件標題：Aegis Knowledge Core - 常見問答
+
+## metadata
+source_type: faq
+domain: project_faq
+language: zh-TW
+version: 1.0
+updated_at: 2026-07-01
+tags: FAQ, RAG, LangChain, LangGraph, Chroma, Ollama, Streamlit, Troubleshooting
+
+## summary
+這份文件收錄技術審查者、收件人或使用者最可能詢問的常見問題，協助 RAG 系統快速檢索標準回答。
+
+## key_points
+- FAQ 以問答形式整理，適合 RAG similarity search。
+- 問題涵蓋專案用途、技術元件、啟動方式、本機 LLM、fallback 與來源引用。
+- 回答使用繁體中文並保留固定專有名詞。
+
+## content
+
+### 1. 專案用途
+這個專案的用途是展示一個可以在本機執行的 RAG 知識庫。它可以讀取本地文件，建立 Chroma 向量資料庫，透過 LangGraph 管理查詢流程，並使用 Ollama 本機 LLM 產生回答。
+
+### 2. 啟動流程
+典型啟動流程是先建立虛擬環境，安裝 requirements，執行 `python -m app.ingest` 建立 Chroma index，再執行 `streamlit run app/demo.py` 開啟瀏覽器 Demo。
+
+### 3. 本機 LLM
+若要展示 LLM 生成能力，需要安裝 Ollama、啟動 service，並下載模型，例如 `ollama pull llama3.2:3b`。系統會透過 LangChain `ChatOllama` 呼叫本機模型。
+
+### 4. fallback 行為
+如果 Ollama server 沒有啟動、模型不存在或 `langchain-ollama` 沒安裝，系統不會直接崩潰，而是自動使用 extractive RAG fallback，根據 Chroma 取回的內容組成回答。
+
+## qa_examples
+
+### Q: 這個專案需要雲端 LLM API 嗎？
+A: 不需要。它可以使用 HuggingFace embedding model 與 Ollama 本機 LLM，在 MacBook 上本機執行。
+
+### Q: 為什麼需要 Chroma？
+A: Chroma 用來保存文件 chunks、metadata 與 embeddings，並在使用者提問時進行 similarity search，找出最相關的文件片段。
+
+### Q: 為什麼需要 LangGraph？
+A: LangGraph 用來管理 RAG workflow，讓 retrieval、context selection、prompt building 與 LLM generation 成為清楚可擴充的節點。
+
+### Q: Streamlit Demo 會顯示什麼？
+A: Streamlit 會顯示查詢問題、Answer Mode、Local LLM 狀態、RAG 回答、Evidence、RAG Prompt、Chroma Vector Map 與 indexed chunks。
+
+### Q: 如果收件人的 MacBook 沒有 Ollama 怎麼辦？
+A: 可以先用 extractive RAG fallback 展示 Chroma 與 LangGraph；若要展示 LLM，請安裝 Ollama 並下載 `llama3.2:3b`。
+
+## retrieval_notes
+這份文件適合回答常見問答、啟動方式、元件用途、本機 LLM、fallback、Chroma、LangGraph、Streamlit 顯示內容等問題。
