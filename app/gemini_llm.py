@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+from threading import Lock
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
@@ -11,6 +12,9 @@ from app.config import (
     GEMINI_MODEL,
     GEMINI_TIMEOUT_SECONDS,
 )
+
+
+_GEMINI_REQUEST_LOCK = Lock()
 
 
 @dataclass
@@ -110,8 +114,9 @@ def generate_with_gemini(
     )
 
     try:
-        with request.urlopen(gemini_request, timeout=timeout) as response:
-            response_body = response.read().decode("utf-8")
+        with _GEMINI_REQUEST_LOCK:
+            with request.urlopen(gemini_request, timeout=timeout) as response:
+                response_body = response.read().decode("utf-8")
     except error.HTTPError as exc:
         raise _extract_error(exc) from exc
     except (error.URLError, TimeoutError, socket.timeout) as exc:
