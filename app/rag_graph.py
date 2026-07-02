@@ -1,4 +1,6 @@
 from functools import lru_cache
+import math
+import re
 from typing import List, TypedDict
 
 from langchain_chroma import Chroma
@@ -10,6 +12,8 @@ from app.config import (
     DEFAULT_TOP_K,
     GEMINI_MODEL,
     MAX_RELEVANT_DISTANCE,
+    MIN_RELEVANT_CJK_BIGRAM_OVERLAP,
+    MIN_RELEVANT_CJK_BIGRAM_RATIO,
     NO_ANSWER_MESSAGE,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
@@ -52,6 +56,33 @@ class GraphState(TypedDict, total=False):
     steps: List[str]
 
 
+QUESTION_STOP_PHRASES = (
+    "是什麼意思",
+    "是甚麼意思",
+    "什麼是",
+    "甚麼是",
+    "是什麼",
+    "是甚麼",
+    "是誰",
+    "為什麼",
+    "為何",
+    "如何",
+    "怎麼",
+    "怎樣",
+    "哪些",
+    "哪個",
+    "哪一個",
+    "多少",
+    "請問",
+    "幫我",
+    "可以",
+    "需要",
+    "什麼",
+    "甚麼",
+    "問題",
+)
+
+
 @lru_cache(maxsize=1)
 def get_embedding_model():
     return create_embedding_model()
@@ -89,6 +120,64 @@ def _distance_to_match_score(distance: float, best: float, worst: float) -> floa
 
 def _source_name(metadata: dict) -> str:
     return metadata.get("source") or metadata.get("filename") or "unknown"
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text.lower())
+
+
+def _compact_query(text: str) -> str:
+    cleaned = _compact_text(text)
+    for phrase in QUESTION_STOP_PHRASES:
+        cleaned = cleaned.replace(phrase, "")
+
+    return "".join(char for char in cleaned if char not in {"是", "的", "了", "嗎", "呢", "啊"})
+
+
+def _ascii_terms(text: str) -> set[str]:
+    return set(re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{1,}", text.lower()))
+
+
+def _cjk_sequences(text: str) -> list[str]:
+    return [match for match in re.findall(r"[\u4e00-\u9fff]+", text) if len(match) >= 2]
+
+
+def _cjk_bigrams(text: str) -> set[str]:
+    bigrams = set()
+    for sequence in _cjk_sequences(text):
+        if len(sequence) == 2:
+            bigrams.add(sequence)
+        else:
+            bigrams.update(sequence[index : index + 2] for index in range(len(sequence) - 1))
+    return bigrams
+
+
+def _has_query_anchor(question: str, content: str) -> bool:
+    compact_query = _compact_query(question)
+    compact_content = _compact_text(content)
+
+    ascii_terms = _ascii_terms(question)
+    if ascii_terms and any(term in compact_content for term in ascii_terms):
+        return True
+
+    cjk_terms = _cjk_sequences(compact_query)
+    if any(2 <= len(term) <= 8 and term in compact_content for term in cjk_terms):
+        return True
+
+    query_bigrams = _cjk_bigrams(compact_query)
+    if not query_bigrams:
+        return False
+
+    content_bigrams = _cjk_bigrams(compact_content)
+    overlap_count = len(query_bigrams.intersection(content_bigrams))
+    required_overlap = min(
+        len(query_bigrams),
+        max(
+            MIN_RELEVANT_CJK_BIGRAM_OVERLAP,
+            math.ceil(len(query_bigrams) * MIN_RELEVANT_CJK_BIGRAM_RATIO),
+        ),
+    )
+    return overlap_count >= required_overlap
 
 
 def retrieve_from_chroma(state: GraphState) -> GraphState:
@@ -139,6 +228,9 @@ def rank_and_select_context(state: GraphState) -> GraphState:
     retrieved = state.get("retrieved", [])
     top_distance = retrieved[0]["distance"] if retrieved else None
     confidence_label = "Low"
+    distance_candidates = [
+        item for item in retrieved if item["distance"] <= MAX_RELEVANT_DISTANCE
+    ]
 
     if top_distance is None:
         selected = []
@@ -149,8 +241,15 @@ def rank_and_select_context(state: GraphState) -> GraphState:
             f"最接近的文件距離為 {top_distance}，高於門檻 {MAX_RELEVANT_DISTANCE}。"
         )
     else:
-        selected = retrieved[: min(3, len(retrieved))]
-        no_answer_reason = ""
+        selected = [
+            item
+            for item in distance_candidates
+            if _has_query_anchor(state["question"], item["content"])
+        ][:3]
+        if selected:
+            no_answer_reason = ""
+        else:
+            no_answer_reason = "取回片段未命中問題中的關鍵詞或命名實體。"
 
     top_confidence = selected[0]["confidence"] if selected else 0
     if top_confidence >= 0.7 and not no_answer_reason:

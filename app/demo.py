@@ -330,6 +330,8 @@ with evidence_col:
         selected_items = response.get("selected", [])
         if not selected_items:
             st.info("本次沒有選用文件片段作為回答依據。")
+            if response.get("no_answer_reason"):
+                st.caption(f"判定原因：{response['no_answer_reason']}")
 
         for item in selected_items:
             expanded = item["rank"] == 1

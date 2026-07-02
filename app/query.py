@@ -30,6 +30,8 @@ def search(
         print(f"LLM status: {response['llm_status']}")
     print("\nAnswer")
     print(response.get("answer", ""))
+    if response.get("no_answer_reason"):
+        print(f"\nNo answer reason: {response['no_answer_reason']}")
 
     selected = response.get("selected", [])
     if not selected:
