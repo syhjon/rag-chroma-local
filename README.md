@@ -1,6 +1,6 @@
 # Aegis Knowledge Core
 
-這是一個可以在 MacBook 本機執行的 RAG 知識庫展示專案。專案整合 LangChain、LangGraph、Chroma、HuggingFace Embeddings、Gemini API、Ollama 本機 LLM 與 Streamlit，用來展示文件向量化、語意檢索、RAG 提示詞、雲端與本機 LLM 備援、來源引用與向量視覺化。
+這是一個可以在 MacBook 本機執行的 RAG 知識庫展示專案。專案整合 LangChain、LangGraph、Chroma、HuggingFace Embeddings、Gemini API、Ollama 本機 LLM 與 Streamlit，用來展示文件向量化、語意檢索、本機 LLM 查詢改寫、RAG 提示詞、雲端與本機 LLM 備援、來源引用與向量視覺化。
 
 ## 快速啟動展示
 
@@ -74,7 +74,7 @@ GEMINI_MODEL = "gemini-2.0-flash"
 
 ## 啟用本機 LLM 備援
 
-如果只要展示 Chroma 檢索與 LangGraph 流程，可以跳過本段。若要在 Gemini 額度用完或不可用時使用本機 LLM 備援，請安裝 Ollama 並下載模型：
+如果只要展示 Chroma 檢索與 LangGraph 流程，可以跳過本段。若要啟用本機 LLM 查詢改寫，或在 Gemini 額度用完與不可用時使用本機 LLM 備援，請安裝 Ollama 並下載模型：
 
 ```bash
 brew install ollama
@@ -94,7 +94,7 @@ ollama list
 OLLAMA_MODEL = "llama3.2:3b"
 ```
 
-啟動 Streamlit 後，側邊欄會顯示 Gemini API 與本機 LLM 狀態。若 Ollama 模型已就緒，可以開啟「使用 Ollama 作為備援」，當 Gemini 額度用完或不可用時，回答模式會切換為「本機 LLM RAG」。
+啟動 Streamlit 後，側邊欄會顯示 Gemini API 與本機 LLM 狀態。若 Ollama 模型已就緒，可以開啟「使用本機 LLM 改寫 Chroma 查詢」，讓本機模型先把使用者問題整理成更容易命中 Chroma 的查詢文字；也可以開啟「使用 Ollama 作為備援」，當 Gemini 額度用完或不可用時，回答模式會切換為「本機 LLM RAG」。
 
 ## CLI 快速測試
 
@@ -122,6 +122,12 @@ python -m app.query "Aegis Knowledge Core 可以解決什麼問題？" --no-loca
 python -m app.query "這個系統用了哪些技術？" --top-k 5
 ```
 
+停用本機 LLM 查詢改寫：
+
+```bash
+python -m app.query "什麼叫做企業？" --no-query-rewrite
+```
+
 ## 專案結構
 
 ```text
@@ -131,7 +137,7 @@ rag-chroma-local/
 │   ├── embeddings.py   # HuggingFace embedding factory 與本機 cache 設定
 │   ├── gemini_llm.py   # Gemini API REST 呼叫與 429 RESOURCE_EXHAUSTED 判斷
 │   ├── ingest.py       # 建立或重建 Chroma 向量資料庫
-│   ├── local_llm.py    # Ollama 狀態檢查與 ChatOllama 呼叫
+│   ├── local_llm.py    # Ollama 狀態檢查、查詢改寫與 ChatOllama 呼叫
 │   ├── rag_graph.py    # LangGraph RAG 查詢流程
 │   ├── query.py        # CLI 查詢入口
 │   └── demo.py         # Streamlit 視覺化展示
@@ -146,9 +152,9 @@ rag-chroma-local/
 
 - LangChain：讀取 `data/` 文件、切分文件片段、建立 embeddings，並串接 Chroma vector store。
 - Chroma：保存文件內容、metadata 與 embedding 向量，提供語意相似度搜尋。
-- LangGraph：把查詢流程拆成檢索、排序、提示詞組合與回答生成節點。
+- LangGraph：把查詢流程拆成查詢改寫、檢索、排序、提示詞組合與回答生成節點。
 - Gemini API：優先生成 RAG 回答，適合展示雲端 LLM 串接能力。
-- Ollama：在本機執行 LLM，作為 Gemini 額度用完或不可用時的備援。
+- Ollama：在本機執行 LLM，可用於 Chroma 查詢改寫，也可作為 Gemini 額度用完或不可用時的備援。
 - Streamlit：展示查詢、回答模式、引用依據、RAG 提示詞與 Chroma 向量地圖。
 - Plotly + PCA：將高維 embeddings 壓縮成 2D 圖，方便使用者理解語意分布。
 
@@ -187,6 +193,7 @@ python -m app.ingest
 
 ```text
 使用者問題
+  -> rewrite_query_for_retrieval
   -> retrieve_from_chroma
   -> rank_and_select_context
   -> build_rag_prompt
@@ -195,10 +202,11 @@ python -m app.ingest
 
 各節點職責：
 
+- `rewrite_query_for_retrieval`：使用本機 Ollama LLM 將使用者問題整理成 Chroma 較容易命中的查詢文字與關鍵詞；若 Ollama 不可用，會退回原始問題。
 - `retrieve_from_chroma`：使用 Chroma similarity search 取回相關文件片段。
-- `rank_and_select_context`：依距離與排序選出要進入回答的 context。
+- `rank_and_select_context`：依距離、排序與原始問題關鍵詞判斷選出要進入回答的 context。
 - `build_rag_prompt`：將使用者問題與取回內容組成 RAG 提示詞。
-- `generate_answer`：若有相近資料，先呼叫 Gemini API；若 Gemini 回傳 `429 RESOURCE_EXHAUSTED` 或不可用，切換到 Ollama 本機 LLM；若本機 LLM 不可用，改用來源式 RAG 備援回答；若沒有相近資料，回答「目前資料庫無此答案，請問其他問題」。
+- `generate_answer`：若有相近資料，先呼叫 Gemini API；若 Gemini 回傳 `429 RESOURCE_EXHAUSTED` 或不可用，切換到 Ollama 本機 LLM；若本機 LLM 不可用，改用來源式 RAG 備援回答。當使用者一次詢問多個問題時，文件能支持的部分會正常回答，沒有資料的子問題會標註資料不足；若整題都沒有相近資料，才回答「目前資料庫無此答案，請問其他問題」。
 
 ## 分享或交付前
 

@@ -11,6 +11,7 @@ def search(
     gemini_model: str = GEMINI_MODEL,
     use_llm: bool = True,
     llm_model: str = OLLAMA_MODEL,
+    rewrite_query: bool = True,
 ):
     response = run_query(
         query,
@@ -19,10 +20,17 @@ def search(
         gemini_model=gemini_model,
         use_llm=use_llm,
         llm_model=llm_model,
+        rewrite_query=rewrite_query,
     )
 
     print("\nLangGraph steps")
     print(" -> ".join(response.get("steps", [])))
+    if response.get("rewrite_status"):
+        print(f"\nQuery rewrite: {response['rewrite_status']}")
+    if response.get("retrieval_query"):
+        print(f"Chroma query: {response['retrieval_query']}")
+    if response.get("retrieval_keywords"):
+        print(f"Keywords: {', '.join(response['retrieval_keywords'])}")
     print(f"\nAnswer mode: {response.get('answer_mode', 'N/A')}")
     if response.get("gemini_status"):
         print(f"Gemini status: {response['gemini_status']}")
@@ -55,8 +63,9 @@ def parse_args():
     parser.add_argument("--no-gemini", action="store_true", help="Disable Gemini API generation.")
     parser.add_argument("--gemini-model", default=GEMINI_MODEL, help="Gemini model name.")
     parser.add_argument("--llm", action="store_true", help="Compatibility flag; local Ollama fallback is enabled by default.")
-    parser.add_argument("--no-local-llm", action="store_true", help="Disable local Ollama fallback.")
+    parser.add_argument("--no-local-llm", action="store_true", help="Disable local Ollama answer fallback.")
     parser.add_argument("--llm-model", default=OLLAMA_MODEL, help="Ollama model name.")
+    parser.add_argument("--no-query-rewrite", action="store_true", help="Disable local LLM query rewriting before Chroma.")
     return parser.parse_args()
 
 
@@ -70,4 +79,5 @@ if __name__ == "__main__":
         gemini_model=args.gemini_model,
         use_llm=not args.no_local_llm,
         llm_model=args.llm_model,
+        rewrite_query=not args.no_query_rewrite,
     )

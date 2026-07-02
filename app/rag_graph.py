@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 import math
 import re
 from typing import List, TypedDict
@@ -17,10 +18,14 @@ from app.config import (
     NO_ANSWER_MESSAGE,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
+    QUERY_REWRITE_MAX_KEYWORDS,
 )
 from app.embeddings import create_embedding_model
 from app.gemini_llm import GeminiApiError, generate_with_gemini
-from app.local_llm import check_local_llm, generate_with_ollama
+from app.local_llm import check_local_llm, generate_with_ollama, rewrite_query_with_ollama
+
+
+PARTIAL_NO_ANSWER_MESSAGE = "部分子問題在目前資料庫中沒有足夠資訊，因此未延伸回答。"
 
 
 class RetrievalItem(TypedDict):
@@ -41,6 +46,13 @@ class GraphState(TypedDict, total=False):
     gemini_model: str
     use_llm: bool
     llm_model: str
+    rewrite_query: bool
+    rewritten_question: str
+    retrieval_query: str
+    retrieval_search_text: str
+    retrieval_keywords: List[str]
+    rewrite_status: str
+    rewrite_error: str
     retrieved: List[RetrievalItem]
     selected: List[RetrievalItem]
     rag_prompt: str
@@ -60,8 +72,24 @@ class GraphState(TypedDict, total=False):
 QUESTION_STOP_PHRASES = (
     "是什麼意思",
     "是甚麼意思",
+    "叫做什麼",
+    "叫做甚麼",
+    "什麼叫做",
+    "甚麼叫做",
+    "什叫做",
+    "啥叫做",
+    "什麼叫",
+    "甚麼叫",
+    "什叫",
+    "啥叫",
+    "何謂",
     "什麼是",
     "甚麼是",
+    "什是",
+    "啥是",
+    "誰是",
+    "是指什麼",
+    "是指甚麼",
     "是什麼",
     "是甚麼",
     "是誰",
@@ -78,6 +106,10 @@ QUESTION_STOP_PHRASES = (
     "幫我",
     "可以",
     "需要",
+    "叫做",
+    "稱為",
+    "稱作",
+    "定義",
     "什麼",
     "甚麼",
     "問題",
@@ -111,6 +143,37 @@ def _normalize_text(text: str, max_chars: int = 220) -> str:
     return f"{cleaned[:max_chars].rstrip()}..."
 
 
+def _clean_rewrite_text(value: object, max_chars: int = 180) -> str:
+    if isinstance(value, list):
+        value = " ".join(str(item) for item in value)
+
+    cleaned = " ".join(str(value or "").split())
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars].rstrip()
+
+
+def _dedupe_strings(items: List[str], max_items: int | None = None) -> List[str]:
+    results: List[str] = []
+    seen = set()
+
+    for item in items:
+        cleaned = _clean_rewrite_text(item, max_chars=60)
+        if not cleaned:
+            continue
+
+        key = cleaned.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        results.append(cleaned)
+        if max_items and len(results) >= max_items:
+            break
+
+    return results
+
+
 def _distance_to_match_score(distance: float, best: float, worst: float) -> float:
     if worst <= best:
         return 1.0
@@ -132,15 +195,20 @@ def _compact_query(text: str) -> str:
     for phrase in QUESTION_STOP_PHRASES:
         cleaned = cleaned.replace(phrase, "")
 
-    return "".join(char for char in cleaned if char not in {"是", "的", "了", "嗎", "呢", "啊"})
+    stop_chars = {"是", "的", "了", "嗎", "呢", "啊", "什", "甚", "啥", "誰"}
+    return "".join(char for char in cleaned if char not in stop_chars)
 
 
 def _ascii_terms(text: str) -> set[str]:
     return set(re.findall(r"[a-zA-Z][a-zA-Z0-9_-]{1,}", text.lower()))
 
 
-def _cjk_sequences(text: str) -> list[str]:
-    return [match for match in re.findall(r"[\u4e00-\u9fff]+", text) if len(match) >= 2]
+def _cjk_sequences(text: str, min_length: int = 2) -> list[str]:
+    return [
+        match
+        for match in re.findall(r"[\u4e00-\u9fff]+", text)
+        if len(match) >= min_length
+    ]
 
 
 def _cjk_bigrams(text: str) -> set[str]:
@@ -153,6 +221,75 @@ def _cjk_bigrams(text: str) -> set[str]:
     return bigrams
 
 
+def _fallback_query_keywords(question: str) -> List[str]:
+    compact_query = _compact_query(question)
+    keywords = sorted(_ascii_terms(question))
+    keywords.extend(_cjk_sequences(compact_query))
+
+    if 2 <= len(compact_query) <= 12:
+        keywords.append(compact_query)
+
+    return _dedupe_strings(keywords, max_items=QUERY_REWRITE_MAX_KEYWORDS)
+
+
+def _extract_json_payload(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+
+    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+    if not match:
+        raise ValueError("本機 LLM 沒有回傳 JSON。")
+
+    payload = json.loads(match.group(0))
+    if not isinstance(payload, dict):
+        raise ValueError("本機 LLM 回傳的 JSON 不是物件。")
+
+    return payload
+
+
+def _parse_keywords(value: object) -> List[str]:
+    if isinstance(value, list):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = re.split(r"[,，、;；\n]+", str(value or ""))
+
+    return _dedupe_strings(raw_items, max_items=QUERY_REWRITE_MAX_KEYWORDS)
+
+
+def _parse_query_rewrite(raw_text: str, question: str) -> dict:
+    payload = _extract_json_payload(raw_text)
+
+    normalized_question = _clean_rewrite_text(
+        payload.get("normalized_question") or question,
+    )
+    retrieval_query = _clean_rewrite_text(
+        payload.get("retrieval_query") or normalized_question or question,
+    )
+    keywords = _parse_keywords(payload.get("keywords"))
+
+    if not keywords:
+        keywords = _fallback_query_keywords(retrieval_query or normalized_question or question)
+
+    return {
+        "rewritten_question": normalized_question or question,
+        "retrieval_query": retrieval_query or normalized_question or question,
+        "retrieval_keywords": keywords,
+    }
+
+
+def _build_retrieval_search_text(state: GraphState) -> str:
+    retrieval_query = state.get("retrieval_query") or state.get("rewritten_question") or state["question"]
+    keywords = state.get("retrieval_keywords", [])
+
+    parts = [retrieval_query]
+    if keywords:
+        parts.append(f"關鍵詞：{'、'.join(keywords)}")
+
+    return "\n".join(_dedupe_strings(parts))
+
+
 def _has_query_anchor(question: str, content: str) -> bool:
     compact_query = _compact_query(question)
     compact_content = _compact_text(content)
@@ -163,6 +300,9 @@ def _has_query_anchor(question: str, content: str) -> bool:
 
     cjk_terms = _cjk_sequences(compact_query)
     if any(2 <= len(term) <= 8 and term in compact_content for term in cjk_terms):
+        return True
+
+    if len(compact_query) == 2 and compact_query in compact_content:
         return True
 
     query_bigrams = _cjk_bigrams(compact_query)
@@ -181,19 +321,102 @@ def _has_query_anchor(question: str, content: str) -> bool:
     return overlap_count >= required_overlap
 
 
-def retrieve_from_chroma(state: GraphState) -> GraphState:
+def _has_state_relevance_anchor(state: GraphState, content: str) -> bool:
+    original_question = state["question"]
+    if _has_query_anchor(original_question, content):
+        return True
+
+    compact_original = _compact_query(original_question)
+    original_has_specific_term = bool(_ascii_terms(original_question)) or any(
+        len(term) >= 3 for term in _cjk_sequences(compact_original)
+    )
+    if original_has_specific_term:
+        return False
+
+    auxiliary_question = " ".join(
+        [
+            state.get("rewritten_question", ""),
+            " ".join(state.get("retrieval_keywords", [])),
+        ]
+    )
+    return bool(auxiliary_question.strip()) and _has_query_anchor(auxiliary_question, content)
+
+
+def rewrite_query_for_retrieval(state: GraphState) -> GraphState:
     question = state["question"].strip()
-    top_k = int(state.get("top_k") or DEFAULT_TOP_K)
+    step_name = "rewrite_query_for_retrieval"
+    fallback = {
+        "rewritten_question": question,
+        "retrieval_query": question,
+        "retrieval_keywords": _fallback_query_keywords(question),
+    }
 
     if not question:
         return {
             **state,
+            **fallback,
+            "rewrite_status": "問題為空，略過查詢改寫。",
+            "steps": [*state.get("steps", []), step_name],
+        }
+
+    if not state.get("rewrite_query", True):
+        return {
+            **state,
+            **fallback,
+            "rewrite_status": "本機 LLM 查詢改寫已停用，使用原始問題檢索。",
+            "steps": [*state.get("steps", []), step_name],
+        }
+
+    llm_model = state.get("llm_model") or OLLAMA_MODEL
+    status = check_local_llm(model=llm_model, base_url=OLLAMA_BASE_URL)
+    if not status.available:
+        return {
+            **state,
+            **fallback,
+            "rewrite_status": f"本機 LLM 不可用，使用原始問題檢索：{status.message}",
+            "rewrite_error": status.message,
+            "steps": [*state.get("steps", []), step_name],
+        }
+
+    try:
+        raw_rewrite = rewrite_query_with_ollama(
+            question,
+            model=llm_model,
+            base_url=OLLAMA_BASE_URL,
+        )
+        parsed_rewrite = _parse_query_rewrite(raw_rewrite, question)
+    except Exception as exc:
+        return {
+            **state,
+            **fallback,
+            "rewrite_status": f"本機 LLM 查詢改寫失敗，使用原始問題檢索：{exc}",
+            "rewrite_error": str(exc),
+            "steps": [*state.get("steps", []), step_name],
+        }
+
+    return {
+        **state,
+        **parsed_rewrite,
+        "rewrite_status": f"本機 LLM 已使用 {llm_model} 完成查詢改寫。",
+        "rewrite_error": "",
+        "steps": [*state.get("steps", []), step_name],
+    }
+
+
+def retrieve_from_chroma(state: GraphState) -> GraphState:
+    search_text = _build_retrieval_search_text(state).strip()
+    top_k = int(state.get("top_k") or DEFAULT_TOP_K)
+
+    if not search_text:
+        return {
+            **state,
+            "retrieval_search_text": search_text,
             "retrieved": [],
             "steps": [*state.get("steps", []), "retrieve_from_chroma"],
         }
 
     vector_db = get_vector_db()
-    docs_with_scores = vector_db.similarity_search_with_score(question, k=top_k)
+    docs_with_scores = vector_db.similarity_search_with_score(search_text, k=top_k)
     distances = [float(distance) for _, distance in docs_with_scores]
     best_distance = min(distances) if distances else 0.0
     worst_distance = max(distances) if distances else 0.0
@@ -220,6 +443,7 @@ def retrieve_from_chroma(state: GraphState) -> GraphState:
 
     return {
         **state,
+        "retrieval_search_text": search_text,
         "retrieved": retrieved,
         "steps": [*state.get("steps", []), "retrieve_from_chroma"],
     }
@@ -245,7 +469,7 @@ def rank_and_select_context(state: GraphState) -> GraphState:
         selected = [
             item
             for item in distance_candidates
-            if _has_query_anchor(state["question"], item["content"])
+            if _has_state_relevance_anchor(state, item["content"])
         ][:3]
         if selected:
             no_answer_reason = ""
@@ -275,6 +499,26 @@ def _append_sources(answer: str, sources: List[str]) -> str:
     if sources and not any(source in answer for source in sources):
         return f"{answer.rstrip()}\n\n引用來源：{', '.join(sources)}"
     return answer
+
+
+def _normalize_partial_no_answer(answer: str) -> str:
+    if NO_ANSWER_MESSAGE not in answer:
+        return answer
+
+    answer_without_global_no_answer = re.sub(
+        rf"\s*{re.escape(NO_ANSWER_MESSAGE)}[。.]?\s*",
+        "\n\n",
+        answer,
+    ).strip()
+
+    has_substantive_answer = len(_compact_text(answer_without_global_no_answer)) >= 8
+    if not has_substantive_answer:
+        return answer
+
+    if PARTIAL_NO_ANSWER_MESSAGE in answer_without_global_no_answer:
+        return answer_without_global_no_answer
+
+    return f"{answer_without_global_no_answer}\n\n{PARTIAL_NO_ANSWER_MESSAGE}"
 
 
 def _join_status(*messages: str) -> str:
@@ -307,13 +551,23 @@ def build_rag_prompt(state: GraphState) -> GraphState:
             context_blocks.append(
                 f"[{item['source']}#chunk-{item['chunk_id']}]\n{item['content']}"
             )
+        rewrite_hint = ""
+        if state.get("rewritten_question") and state["question"] != state["rewritten_question"]:
+            rewrite_hint = f"檢索改寫參考：{state['rewritten_question']}\n"
+
         rag_prompt = (
             f"使用者問題：{state['question']}\n\n"
+            f"{rewrite_hint}"
             "可用內部文件內容：\n"
             + "\n\n---\n\n".join(context_blocks)
-            + "\n\n請用繁體中文回答。若文件沒有足夠資訊，"
-            f"請只回覆「{NO_ANSWER_MESSAGE}」。不要使用文件外的知識。"
-            "回答最後列出引用來源。"
+            + "\n\n請用繁體中文回答，並遵守以下規則：\n"
+            "1. 只根據可用內部文件內容回答，不要使用文件外的知識。\n"
+            "2. 如果使用者一次問多個子問題，請逐一處理；文件能支持的子問題要正常回答。\n"
+            "3. 對於文件沒有支持、與知識庫主題無關、或只是使用者自我介紹的片段，不要編造答案；"
+            f"請簡短標示「{PARTIAL_NO_ANSWER_MESSAGE}」。\n"
+            f"4. 只有在整個問題都找不到可用依據時，才只回覆「{NO_ANSWER_MESSAGE}」。\n"
+            f"5. 如果已經回答了任何子問題，不要再輸出「{NO_ANSWER_MESSAGE}」。\n"
+            "6. 回答最後列出引用來源。"
         )
 
     return {
@@ -349,6 +603,7 @@ def generate_answer(state: GraphState) -> GraphState:
                 model=gemini_model,
                 api_key=state.get("gemini_api_key") or None,
             )
+            answer = _normalize_partial_no_answer(answer)
             return {
                 **state,
                 "answer": _append_sources(answer, sources),
@@ -401,6 +656,7 @@ def generate_answer(state: GraphState) -> GraphState:
             model=llm_model,
             base_url=OLLAMA_BASE_URL,
         )
+        answer = _normalize_partial_no_answer(answer)
     except Exception as exc:
         return {
             **state,
@@ -429,12 +685,14 @@ def generate_answer(state: GraphState) -> GraphState:
 def build_retrieval_graph():
     workflow = StateGraph(GraphState)
 
+    workflow.add_node("rewrite_query_for_retrieval", rewrite_query_for_retrieval)
     workflow.add_node("retrieve_from_chroma", retrieve_from_chroma)
     workflow.add_node("rank_and_select_context", rank_and_select_context)
     workflow.add_node("build_rag_prompt", build_rag_prompt)
     workflow.add_node("generate_answer", generate_answer)
 
-    workflow.set_entry_point("retrieve_from_chroma")
+    workflow.set_entry_point("rewrite_query_for_retrieval")
+    workflow.add_edge("rewrite_query_for_retrieval", "retrieve_from_chroma")
     workflow.add_edge("retrieve_from_chroma", "rank_and_select_context")
     workflow.add_edge("rank_and_select_context", "build_rag_prompt")
     workflow.add_edge("build_rag_prompt", "generate_answer")
@@ -456,6 +714,7 @@ def run_query(
     gemini_model: str = GEMINI_MODEL,
     use_llm: bool = True,
     llm_model: str = OLLAMA_MODEL,
+    rewrite_query: bool = True,
 ) -> GraphState:
     graph = get_retrieval_graph()
     return graph.invoke(
@@ -467,6 +726,7 @@ def run_query(
             "gemini_model": gemini_model,
             "use_llm": use_llm,
             "llm_model": llm_model,
+            "rewrite_query": rewrite_query,
             "steps": [],
         }
     )

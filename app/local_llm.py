@@ -110,3 +110,37 @@ def generate_with_ollama(
         ]
     )
     return response.content
+
+
+def rewrite_query_with_ollama(
+    question: str,
+    model: str = OLLAMA_MODEL,
+    base_url: str = OLLAMA_BASE_URL,
+) -> str:
+    if ChatOllama is None:
+        raise RuntimeError("尚未安裝 langchain-ollama。")
+
+    llm = ChatOllama(
+        model=model,
+        base_url=base_url,
+        temperature=0,
+        num_predict=220,
+    )
+
+    response = llm.invoke(
+        [
+            (
+                "system",
+                "你是 RAG 查詢改寫器，只負責把使用者問題整理成更適合向量檢索的文字。"
+                "請使用繁體中文，只輸出 JSON，不要回答問題，不要補充文件外事實。"
+                "JSON 欄位必須包含 normalized_question、retrieval_query、keywords。"
+                "keywords 必須是 3 到 8 個短詞。",
+            ),
+            (
+                "human",
+                "請改寫下列問題，讓 Chroma 向量檢索更容易命中相關文件片段。\n\n"
+                f"使用者問題：{question}",
+            ),
+        ]
+    )
+    return response.content

@@ -140,6 +140,7 @@ def start_query():
         "gemini_model": st.session_state.get("gemini_model_input", GEMINI_MODEL),
         "use_llm": st.session_state.get("use_llm_toggle", True),
         "llm_model": st.session_state.get("llm_model_input", OLLAMA_MODEL),
+        "rewrite_query": st.session_state.get("rewrite_query_toggle", True),
     }
     st.session_state[QUERY_RUNNING_KEY] = True
 
@@ -244,6 +245,12 @@ with st.sidebar:
     )
 
     llm_status = check_local_llm(model=llm_model)
+    st.toggle(
+        "使用本機 LLM 改寫 Chroma 查詢",
+        value=llm_status.available,
+        key="rewrite_query_toggle",
+        disabled=controls_disabled,
+    )
     use_llm = st.toggle(
         "使用 Ollama 作為備援",
         value=llm_status.available,
@@ -279,7 +286,7 @@ with metric_1:
 with metric_2:
     st.metric("文件片段數量", len(df))
 with metric_3:
-    st.metric("流程節點", 4)
+    st.metric("流程節點", 5)
 with metric_4:
     st.metric(
         "執行模式",
@@ -326,7 +333,7 @@ with query_col:
 
     st.markdown("#### LangGraph 查詢流程")
     st.code(
-        "使用者問題 -> Chroma 檢索 -> 相近度判斷 -> 組合 RAG 提示詞 -> Gemini API -> Ollama 備援 -> 來源式備援",
+        "使用者問題 -> 本機 LLM 查詢改寫 -> Chroma 檢索 -> 相近度判斷 -> 組合 RAG 提示詞 -> Gemini API -> Ollama 備援 -> 來源式備援",
         language="text",
     )
 
@@ -370,6 +377,21 @@ with evidence_col:
                     st.write(response["llm_status"])
                 if response.get("llm_error"):
                     st.code(response["llm_error"], language="text")
+
+        if response.get("rewrite_status") or response.get("retrieval_query"):
+            with st.expander("本機 LLM 查詢改寫", expanded=False):
+                if response.get("rewrite_status"):
+                    st.write(response["rewrite_status"])
+                st.write(f"原始問題：{response.get('question', '')}")
+                st.write(f"改寫問題：{response.get('rewritten_question', '')}")
+                st.write(f"Chroma 查詢：{response.get('retrieval_query', '')}")
+                keywords = response.get("retrieval_keywords", [])
+                if keywords:
+                    st.write(f"關鍵詞：{'、'.join(keywords)}")
+                if response.get("retrieval_search_text"):
+                    st.code(response["retrieval_search_text"], language="text")
+                if response.get("rewrite_error"):
+                    st.caption(f"改寫備註：{response['rewrite_error']}")
 
         if response.get("rag_prompt"):
             with st.expander("送給 Gemini / 本機 LLM 的 RAG 提示詞", expanded=False):
@@ -457,7 +479,7 @@ st.markdown(
 
 - 使用 LangChain 讀取本機文件、切分文件片段、建立 embeddings，並串接 Chroma。
 - 使用 Chroma 保存本機向量資料庫，不需要額外啟動外部資料庫服務。
-- 使用 LangGraph 將檢索、排序、提示詞組合與回答生成拆成清楚節點。
+- 使用 LangGraph 將查詢改寫、檢索、排序、提示詞組合與回答生成拆成清楚節點。
 - 使用 Gemini API 優先生成回答，額度用完或不可用時自動切換到 Ollama 本機 LLM。
 - 使用 Streamlit 與 Plotly 同時展示 RAG 回答、引用依據與 embeddings 語意分布。
 """
