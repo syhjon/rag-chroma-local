@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import sys
+import time
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -16,6 +17,7 @@ from app.config import (
     DATA_DIR,
     EMBEDDING_MODEL,
     GEMINI_API_KEY_ENV,
+    GEMINI_MIN_SECONDS_BETWEEN_CALLS,
     GEMINI_MODEL,
     OLLAMA_MODEL,
 )
@@ -104,19 +106,36 @@ def display_match_label(label: str) -> str:
 QUERY_RUNNING_KEY = "query_running"
 PENDING_QUERY_KEY = "pending_query"
 LAST_RESPONSE_KEY = "last_response"
+GEMINI_QUOTA_EXHAUSTED_KEY = "gemini_quota_exhausted"
+GEMINI_COOLDOWN_UNTIL_KEY = "gemini_cooldown_until"
 
 
 def init_session_state():
     st.session_state.setdefault(QUERY_RUNNING_KEY, False)
     st.session_state.setdefault(PENDING_QUERY_KEY, None)
     st.session_state.setdefault(LAST_RESPONSE_KEY, None)
+    st.session_state.setdefault(GEMINI_QUOTA_EXHAUSTED_KEY, False)
+    st.session_state.setdefault(GEMINI_COOLDOWN_UNTIL_KEY, 0.0)
+
+
+def gemini_cooldown_remaining() -> int:
+    remaining = st.session_state[GEMINI_COOLDOWN_UNTIL_KEY] - time.time()
+    return max(0, int(remaining))
+
+
+def can_call_gemini() -> bool:
+    return (
+        not st.session_state[GEMINI_QUOTA_EXHAUSTED_KEY]
+        and gemini_cooldown_remaining() == 0
+    )
 
 
 def start_query():
+    requested_use_gemini = st.session_state.get("use_gemini_toggle", True)
     st.session_state[PENDING_QUERY_KEY] = {
         "question": st.session_state.get("question_input", "").strip(),
         "top_k": st.session_state.get("top_k_input", 4),
-        "use_gemini": st.session_state.get("use_gemini_toggle", True),
+        "use_gemini": requested_use_gemini and can_call_gemini(),
         "gemini_api_key": st.session_state.get("gemini_api_key_input", ""),
         "gemini_model": st.session_state.get("gemini_model_input", GEMINI_MODEL),
         "use_llm": st.session_state.get("use_llm_toggle", True),
@@ -126,6 +145,13 @@ def start_query():
 
 
 def finish_query(response: dict):
+    if response.get("gemini_resource_exhausted"):
+        st.session_state[GEMINI_QUOTA_EXHAUSTED_KEY] = True
+    elif response.get("answer_mode") == "Gemini RAG":
+        st.session_state[GEMINI_COOLDOWN_UNTIL_KEY] = (
+            time.time() + GEMINI_MIN_SECONDS_BETWEEN_CALLS
+        )
+
     st.session_state[LAST_RESPONSE_KEY] = response
     st.session_state[PENDING_QUERY_KEY] = None
     st.session_state[QUERY_RUNNING_KEY] = False
@@ -146,6 +172,9 @@ def build_error_response(exc: Exception) -> dict:
 
 init_session_state()
 controls_disabled = st.session_state[QUERY_RUNNING_KEY]
+gemini_available_for_request = can_call_gemini()
+gemini_wait_seconds = gemini_cooldown_remaining()
+gemini_quota_exhausted = st.session_state[GEMINI_QUOTA_EXHAUSTED_KEY]
 
 st.title("Aegis Knowledge Core")
 st.caption("LangChain + LangGraph + Chroma + Gemini API + Ollama 本機備援 RAG 知識庫展示")
@@ -185,13 +214,25 @@ with st.sidebar:
         "優先使用 Gemini API",
         value=True,
         key="use_gemini_toggle",
-        disabled=controls_disabled,
+        disabled=controls_disabled or gemini_quota_exhausted,
     )
 
     if gemini_api_key_input.strip() or os.getenv(GEMINI_API_KEY_ENV):
         st.success(f"已偵測到 {GEMINI_API_KEY_ENV}")
     else:
         st.warning(f"尚未設定 {GEMINI_API_KEY_ENV}，會自動改用下一層備援")
+
+    if gemini_quota_exhausted:
+        st.warning("Gemini 已回傳 429，本次瀏覽工作階段會直接使用本機 LLM 備援。")
+        if st.button("重新嘗試 Gemini API", width="stretch", disabled=controls_disabled):
+            st.session_state[GEMINI_QUOTA_EXHAUSTED_KEY] = False
+            st.session_state[GEMINI_COOLDOWN_UNTIL_KEY] = 0.0
+            st.rerun()
+    elif use_gemini and gemini_wait_seconds > 0:
+        st.info(
+            f"Gemini 冷卻中，請等待約 {gemini_wait_seconds} 秒後再送出，"
+            "或關閉「優先使用 Gemini API」改用本機備援。"
+        )
 
     st.divider()
     st.subheader("本機 LLM 備援")
@@ -240,7 +281,10 @@ with metric_2:
 with metric_3:
     st.metric("流程節點", 4)
 with metric_4:
-    st.metric("執行模式", "Gemini 優先" if use_gemini else "本機備援")
+    st.metric(
+        "執行模式",
+        "Gemini 優先" if use_gemini and gemini_available_for_request else "本機備援",
+    )
 
 st.divider()
 
@@ -268,7 +312,12 @@ with query_col:
         "正在生成回答..." if controls_disabled else "執行 LangGraph 查詢",
         type="primary",
         width="stretch",
-        disabled=controls_disabled or df.empty or not question.strip(),
+        disabled=(
+            controls_disabled
+            or df.empty
+            or not question.strip()
+            or (use_gemini and not gemini_quota_exhausted and gemini_wait_seconds > 0)
+        ),
         on_click=start_query,
     )
 

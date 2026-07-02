@@ -50,6 +50,7 @@ class GraphState(TypedDict, total=False):
     confidence_label: str
     gemini_status: str
     gemini_error: str
+    gemini_resource_exhausted: bool
     llm_status: str
     llm_error: str
     no_answer_reason: str
@@ -338,6 +339,7 @@ def generate_answer(state: GraphState) -> GraphState:
     sources = state.get("sources", [])
     gemini_status = ""
     gemini_error = ""
+    gemini_resource_exhausted = False
 
     if state.get("use_gemini", True):
         gemini_model = state.get("gemini_model") or GEMINI_MODEL
@@ -352,11 +354,13 @@ def generate_answer(state: GraphState) -> GraphState:
                 "answer": _append_sources(answer, sources),
                 "answer_mode": "Gemini RAG",
                 "gemini_status": f"Gemini API 已成功使用模型 {gemini_model} 生成回答。",
+                "gemini_resource_exhausted": False,
                 "steps": [*state.get("steps", []), step_name],
             }
         except GeminiApiError as exc:
             gemini_error = str(exc)
             if exc.resource_exhausted:
+                gemini_resource_exhausted = True
                 gemini_status = "Gemini API 額度已用完（429 RESOURCE_EXHAUSTED），已切換到本機 LLM 備援。"
             else:
                 gemini_status = f"Gemini API 無法使用，已切換到本機 LLM 備援。原因：{exc}"
@@ -370,6 +374,7 @@ def generate_answer(state: GraphState) -> GraphState:
             "answer_mode": "Extractive RAG",
             "gemini_status": gemini_status,
             "gemini_error": gemini_error,
+            "gemini_resource_exhausted": gemini_resource_exhausted,
             "llm_status": "本機 LLM 備援已停用。",
             "steps": [*state.get("steps", []), step_name],
         }
@@ -384,6 +389,7 @@ def generate_answer(state: GraphState) -> GraphState:
             "answer_mode": "Extractive RAG Fallback",
             "gemini_status": gemini_status,
             "gemini_error": gemini_error,
+            "gemini_resource_exhausted": gemini_resource_exhausted,
             "llm_status": _join_status(gemini_status, f"本機 LLM 不可用：{status.message}"),
             "llm_error": _join_status(gemini_error, status.message),
             "steps": [*state.get("steps", []), step_name],
@@ -402,6 +408,7 @@ def generate_answer(state: GraphState) -> GraphState:
             "answer_mode": "Extractive RAG Fallback",
             "gemini_status": gemini_status,
             "gemini_error": gemini_error,
+            "gemini_resource_exhausted": gemini_resource_exhausted,
             "llm_status": _join_status(gemini_status, f"本機 LLM 生成失敗：{exc}"),
             "llm_error": _join_status(gemini_error, str(exc)),
             "steps": [*state.get("steps", []), step_name],
@@ -413,6 +420,7 @@ def generate_answer(state: GraphState) -> GraphState:
         "answer_mode": "Local LLM RAG",
         "gemini_status": gemini_status,
         "gemini_error": gemini_error,
+        "gemini_resource_exhausted": gemini_resource_exhausted,
         "llm_status": _join_status(gemini_status, status.message),
         "steps": [*state.get("steps", []), step_name],
     }

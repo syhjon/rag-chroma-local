@@ -24,6 +24,7 @@ GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com"
 GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
 GEMINI_MODEL = "gemini-2.0-flash"
 GEMINI_TIMEOUT_SECONDS = 30
+GEMINI_MIN_SECONDS_BETWEEN_CALLS = 8
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "llama3.2:3b"
