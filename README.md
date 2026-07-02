@@ -155,6 +155,7 @@ rag-chroma-local/
 - LangGraph：把查詢流程拆成查詢改寫、檢索、排序、提示詞組合與回答生成節點。
 - Gemini API：優先生成 RAG 回答，適合展示雲端 LLM 串接能力。
 - Ollama：在本機執行 LLM，可用於 Chroma 查詢改寫，也可作為 Gemini 額度用完或不可用時的備援。
+- OpenCC：將本機 LLM 或外部 LLM 可能輸出的簡體中文正規化為繁體中文。
 - Streamlit：展示查詢、回答模式、引用依據、RAG 提示詞與 Chroma 向量地圖。
 - Plotly + PCA：將高維 embeddings 壓縮成 2D 圖，方便使用者理解語意分布。
 

@@ -133,6 +133,8 @@ def rewrite_query_with_ollama(
                 "system",
                 "你是 RAG 查詢改寫器，只負責把使用者問題整理成更適合向量檢索的文字。"
                 "請使用繁體中文，只輸出 JSON，不要回答問題，不要補充文件外事實。"
+                "嚴禁使用簡體中文，例如必須寫「企業、關鍵詞、查詢」，不可寫「企业、关键词、查询」。"
+                "若使用者輸入包含自我介紹、助理身份猜測或無意義片段，請忽略那些片段。"
                 "JSON 欄位必須包含 normalized_question、retrieval_query、keywords。"
                 "keywords 必須是 3 到 8 個短詞。",
             ),

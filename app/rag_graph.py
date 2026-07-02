@@ -24,6 +24,11 @@ from app.embeddings import create_embedding_model
 from app.gemini_llm import GeminiApiError, generate_with_gemini
 from app.local_llm import check_local_llm, generate_with_ollama, rewrite_query_with_ollama
 
+try:
+    from opencc import OpenCC
+except ImportError:
+    OpenCC = None
+
 
 PARTIAL_NO_ANSWER_MESSAGE = "部分子問題在目前資料庫中沒有足夠資訊，因此未延伸回答。"
 
@@ -51,6 +56,7 @@ class GraphState(TypedDict, total=False):
     retrieval_query: str
     retrieval_search_text: str
     retrieval_keywords: List[str]
+    answer_question: str
     rewrite_status: str
     rewrite_error: str
     retrieved: List[RetrievalItem]
@@ -134,10 +140,26 @@ def clear_runtime_caches() -> None:
     get_vector_db.cache_clear()
     get_embedding_model.cache_clear()
     get_retrieval_graph.cache_clear()
+    get_opencc_converter.cache_clear()
+
+
+@lru_cache(maxsize=1)
+def get_opencc_converter():
+    if OpenCC is None:
+        raise RuntimeError(
+            "缺少 opencc-python-reimplemented，請執行 "
+            "python -m pip install -r requirements.txt"
+        )
+    return OpenCC("s2t")
+
+
+def _to_traditional_zh(text: str) -> str:
+    converter = get_opencc_converter()
+    return converter.convert(str(text or ""))
 
 
 def _normalize_text(text: str, max_chars: int = 220) -> str:
-    cleaned = " ".join(text.split())
+    cleaned = " ".join(_to_traditional_zh(text).split())
     if len(cleaned) <= max_chars:
         return cleaned
     return f"{cleaned[:max_chars].rstrip()}..."
@@ -147,7 +169,7 @@ def _clean_rewrite_text(value: object, max_chars: int = 180) -> str:
     if isinstance(value, list):
         value = " ".join(str(item) for item in value)
 
-    cleaned = " ".join(str(value or "").split())
+    cleaned = " ".join(_to_traditional_zh(str(value or "")).split())
     if len(cleaned) <= max_chars:
         return cleaned
     return cleaned[:max_chars].rstrip()
@@ -187,7 +209,7 @@ def _source_name(metadata: dict) -> str:
 
 
 def _compact_text(text: str) -> str:
-    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text.lower())
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", _to_traditional_zh(text).lower())
 
 
 def _compact_query(text: str) -> str:
@@ -221,13 +243,33 @@ def _cjk_bigrams(text: str) -> set[str]:
     return bigrams
 
 
-def _fallback_query_keywords(question: str) -> List[str]:
-    compact_query = _compact_query(question)
-    keywords = sorted(_ascii_terms(question))
-    keywords.extend(_cjk_sequences(compact_query))
+def _cjk_ngrams(sequence: str, size: int) -> list[str]:
+    if len(sequence) < size:
+        return []
+    return [sequence[index : index + size] for index in range(len(sequence) - size + 1)]
 
-    if 2 <= len(compact_query) <= 12:
-        keywords.append(compact_query)
+
+def _cjk_anchor_terms(text: str) -> List[str]:
+    compact_query = _compact_query(text)
+    terms: List[str] = []
+
+    for sequence in _cjk_sequences(compact_query):
+        if 2 <= len(sequence) <= 8:
+            terms.append(sequence)
+            continue
+
+        for size in (4, 3):
+            terms.extend(_cjk_ngrams(sequence, size))
+
+    if len(compact_query) == 2:
+        terms.append(compact_query)
+
+    return _dedupe_strings(terms, max_items=QUERY_REWRITE_MAX_KEYWORDS * 4)
+
+
+def _fallback_query_keywords(question: str) -> List[str]:
+    keywords = sorted(_ascii_terms(question))
+    keywords.extend(_cjk_anchor_terms(question))
 
     return _dedupe_strings(keywords, max_items=QUERY_REWRITE_MAX_KEYWORDS)
 
@@ -290,6 +332,48 @@ def _build_retrieval_search_text(state: GraphState) -> str:
     return "\n".join(_dedupe_strings(parts))
 
 
+def _extract_noise_terms(question: str) -> List[str]:
+    normalized_question = _to_traditional_zh(question)
+    terms: List[str] = []
+
+    for pattern in (
+        r"我是([^？?。！!，,；;\s]{2,16})",
+        r"你是([^？?。！!，,；;\s]{2,16})",
+    ):
+        terms.extend(re.findall(pattern, normalized_question))
+
+    return _dedupe_strings(terms, max_items=8)
+
+
+def _strip_irrelevant_question_parts(question: str) -> str:
+    normalized_question = _to_traditional_zh(question)
+    cleaned = normalized_question
+
+    for pattern in (
+        r"我是[^？?。！!，,；;\s]{2,16}[？?。！!，,；;\s]*",
+        r"你是[^？?。！!，,；;\s]{2,16}[？?。！!，,；;\s]*",
+    ):
+        cleaned = re.sub(pattern, "", cleaned)
+
+    cleaned = " ".join(cleaned.split()).strip()
+    return cleaned or normalized_question
+
+
+def _build_answer_question(state: GraphState) -> str:
+    original_question = _strip_irrelevant_question_parts(state["question"])
+    if len(_compact_text(original_question)) >= 4:
+        return original_question
+
+    rewritten_question = state.get("rewritten_question", "").strip()
+
+    if rewritten_question and rewritten_question != state["question"]:
+        rewritten_question = _strip_irrelevant_question_parts(rewritten_question)
+        if rewritten_question and len(_compact_text(rewritten_question)) >= 4:
+            return rewritten_question
+
+    return original_question
+
+
 def _has_query_anchor(question: str, content: str) -> bool:
     compact_query = _compact_query(question)
     compact_content = _compact_text(content)
@@ -298,8 +382,8 @@ def _has_query_anchor(question: str, content: str) -> bool:
     if ascii_terms and any(term in compact_content for term in ascii_terms):
         return True
 
-    cjk_terms = _cjk_sequences(compact_query)
-    if any(2 <= len(term) <= 8 and term in compact_content for term in cjk_terms):
+    cjk_terms = _cjk_anchor_terms(question)
+    if any(term in compact_content for term in cjk_terms):
         return True
 
     if len(compact_query) == 2 and compact_query in compact_content:
@@ -521,6 +605,30 @@ def _normalize_partial_no_answer(answer: str) -> str:
     return f"{answer_without_global_no_answer}\n\n{PARTIAL_NO_ANSWER_MESSAGE}"
 
 
+def _remove_noise_opening(answer: str, question: str) -> str:
+    noise_terms = _extract_noise_terms(question)
+    if not noise_terms:
+        return answer
+
+    paragraphs = [paragraph.strip() for paragraph in answer.split("\n\n")]
+    while paragraphs:
+        first_paragraph = paragraphs[0]
+        first_compact = _compact_text(first_paragraph)
+        has_noise_term = any(_compact_text(term) in first_compact for term in noise_terms)
+        if has_noise_term:
+            paragraphs.pop(0)
+            continue
+        break
+
+    return "\n\n".join(paragraphs).strip() or answer
+
+
+def _normalize_generated_answer(answer: str, state: GraphState) -> str:
+    normalized = _to_traditional_zh(answer)
+    normalized = _remove_noise_opening(normalized, state["question"])
+    return _normalize_partial_no_answer(normalized)
+
+
 def _join_status(*messages: str) -> str:
     return "\n".join(message for message in messages if message)
 
@@ -551,27 +659,40 @@ def build_rag_prompt(state: GraphState) -> GraphState:
             context_blocks.append(
                 f"[{item['source']}#chunk-{item['chunk_id']}]\n{item['content']}"
             )
+        answer_question = _build_answer_question(state)
+        noise_terms = _extract_noise_terms(state["question"])
+        noise_hint = ""
+        if noise_terms:
+            noise_hint = (
+                "偵測到與知識庫無關的使用者自我介紹或助理身份猜測："
+                f"{'、'.join(noise_terms)}。不要稱呼、模仿、承接或回答這些片段。\n"
+            )
+
         rewrite_hint = ""
         if state.get("rewritten_question") and state["question"] != state["rewritten_question"]:
             rewrite_hint = f"檢索改寫參考：{state['rewritten_question']}\n"
 
         rag_prompt = (
-            f"使用者問題：{state['question']}\n\n"
+            f"原始使用者輸入：{_to_traditional_zh(state['question'])}\n"
+            f"主要回答問題：{answer_question}\n\n"
             f"{rewrite_hint}"
+            f"{noise_hint}"
             "可用內部文件內容：\n"
             + "\n\n---\n\n".join(context_blocks)
             + "\n\n請用繁體中文回答，並遵守以下規則：\n"
             "1. 只根據可用內部文件內容回答，不要使用文件外的知識。\n"
             "2. 如果使用者一次問多個子問題，請逐一處理；文件能支持的子問題要正常回答。\n"
-            "3. 對於文件沒有支持、與知識庫主題無關、或只是使用者自我介紹的片段，不要編造答案；"
+            "3. 不要開場寒暄，不要稱呼使用者，不要回應自我介紹、助理身份猜測或無意義片段。\n"
+            "4. 對於文件沒有支持、與知識庫主題無關、或只是使用者自我介紹的片段，不要編造答案；"
             f"請簡短標示「{PARTIAL_NO_ANSWER_MESSAGE}」。\n"
-            f"4. 只有在整個問題都找不到可用依據時，才只回覆「{NO_ANSWER_MESSAGE}」。\n"
-            f"5. 如果已經回答了任何子問題，不要再輸出「{NO_ANSWER_MESSAGE}」。\n"
-            "6. 回答最後列出引用來源。"
+            f"5. 只有在整個主要回答問題都找不到可用依據時，才只回覆「{NO_ANSWER_MESSAGE}」。\n"
+            f"6. 如果已經回答了任何子問題，不要再輸出「{NO_ANSWER_MESSAGE}」。\n"
+            "7. 回答最後列出引用來源。"
         )
 
     return {
         **state,
+        "answer_question": _build_answer_question(state) if selected else "",
         "rag_prompt": rag_prompt,
         "sources": _format_sources(selected),
         "steps": [*state.get("steps", []), "build_rag_prompt"],
@@ -603,7 +724,7 @@ def generate_answer(state: GraphState) -> GraphState:
                 model=gemini_model,
                 api_key=state.get("gemini_api_key") or None,
             )
-            answer = _normalize_partial_no_answer(answer)
+            answer = _normalize_generated_answer(answer, state)
             return {
                 **state,
                 "answer": _append_sources(answer, sources),
@@ -656,7 +777,7 @@ def generate_answer(state: GraphState) -> GraphState:
             model=llm_model,
             base_url=OLLAMA_BASE_URL,
         )
-        answer = _normalize_partial_no_answer(answer)
+        answer = _normalize_generated_answer(answer, state)
     except Exception as exc:
         return {
             **state,
@@ -706,6 +827,56 @@ def get_retrieval_graph():
     return build_retrieval_graph()
 
 
+def build_query_state(
+    question: str,
+    top_k: int = DEFAULT_TOP_K,
+    use_gemini: bool = True,
+    gemini_api_key: str = "",
+    gemini_model: str = GEMINI_MODEL,
+    use_llm: bool = True,
+    llm_model: str = OLLAMA_MODEL,
+    rewrite_query: bool = True,
+) -> GraphState:
+    return {
+        "question": question,
+        "top_k": top_k,
+        "use_gemini": use_gemini,
+        "gemini_api_key": gemini_api_key,
+        "gemini_model": gemini_model,
+        "use_llm": use_llm,
+        "llm_model": llm_model,
+        "rewrite_query": rewrite_query,
+        "steps": [],
+    }
+
+
+def stream_query(
+    question: str,
+    top_k: int = DEFAULT_TOP_K,
+    use_gemini: bool = True,
+    gemini_api_key: str = "",
+    gemini_model: str = GEMINI_MODEL,
+    use_llm: bool = True,
+    llm_model: str = OLLAMA_MODEL,
+    rewrite_query: bool = True,
+):
+    graph = get_retrieval_graph()
+    initial_state = build_query_state(
+        question=question,
+        top_k=top_k,
+        use_gemini=use_gemini,
+        gemini_api_key=gemini_api_key,
+        gemini_model=gemini_model,
+        use_llm=use_llm,
+        llm_model=llm_model,
+        rewrite_query=rewrite_query,
+    )
+
+    for event in graph.stream(initial_state):
+        for node_name, node_state in event.items():
+            yield node_name, node_state
+
+
 def run_query(
     question: str,
     top_k: int = DEFAULT_TOP_K,
@@ -718,15 +889,14 @@ def run_query(
 ) -> GraphState:
     graph = get_retrieval_graph()
     return graph.invoke(
-        {
-            "question": question,
-            "top_k": top_k,
-            "use_gemini": use_gemini,
-            "gemini_api_key": gemini_api_key,
-            "gemini_model": gemini_model,
-            "use_llm": use_llm,
-            "llm_model": llm_model,
-            "rewrite_query": rewrite_query,
-            "steps": [],
-        }
+        build_query_state(
+            question=question,
+            top_k=top_k,
+            use_gemini=use_gemini,
+            gemini_api_key=gemini_api_key,
+            gemini_model=gemini_model,
+            use_llm=use_llm,
+            llm_model=llm_model,
+            rewrite_query=rewrite_query,
+        )
     )

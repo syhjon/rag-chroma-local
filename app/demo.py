@@ -23,7 +23,7 @@ from app.config import (
 )
 from app.ingest import build_vector_db
 from app.local_llm import check_local_llm
-from app.rag_graph import clear_runtime_caches, get_vector_db, run_query
+from app.rag_graph import clear_runtime_caches, get_vector_db, stream_query
 
 
 st.set_page_config(
@@ -101,6 +101,61 @@ def display_match_label(label: str) -> str:
         "Low": "低",
     }
     return labels.get(label, label or "無資料")
+
+
+NODE_LABELS = {
+    "rewrite_query_for_retrieval": "本機 LLM 查詢改寫",
+    "retrieve_from_chroma": "Chroma 檢索",
+    "rank_and_select_context": "相近度判斷",
+    "build_rag_prompt": "組合 RAG 提示詞",
+    "generate_answer": "產生回答",
+}
+NODE_ORDER = list(NODE_LABELS)
+
+
+def display_node_label(node_name: str) -> str:
+    return NODE_LABELS.get(node_name, node_name)
+
+
+def display_step_flow(steps: list[str]) -> str:
+    if not steps:
+        return "尚未開始"
+    return " -> ".join(display_node_label(step) for step in steps)
+
+
+def render_processing_panel(response: dict, running: bool = False):
+    st.markdown("#### 處理狀態")
+
+    if running:
+        st.info("正在執行 LangGraph 查詢，回答完成前控制項會暫時鎖定。")
+        return
+
+    if not response:
+        st.info("尚未執行查詢。")
+        return
+
+    status_label = "查詢完成" if response.get("answer_mode") != "Error" else "查詢錯誤"
+    st.write(f"目前狀態：{status_label}")
+    st.write(f"已完成節點：{display_step_flow(response.get('steps', []))}")
+
+    if response.get("answer_question"):
+        st.write(f"主要回答問題：{response['answer_question']}")
+
+    if response.get("retrieval_search_text"):
+        st.write("Chroma 實際查詢文字：")
+        st.code(response["retrieval_search_text"], language="text")
+
+    st.write(
+        "檢索結果："
+        f"取回 {len(response.get('retrieved', []))} 個片段，"
+        f"選用 {len(response.get('selected', []))} 個片段。"
+    )
+
+    if response.get("no_answer_reason"):
+        st.warning(f"判定原因：{response['no_answer_reason']}")
+
+    if response.get("rewrite_status"):
+        st.caption(response["rewrite_status"])
 
 
 QUERY_RUNNING_KEY = "query_running"
@@ -342,14 +397,52 @@ with evidence_col:
 
     if st.session_state[QUERY_RUNNING_KEY] and st.session_state[PENDING_QUERY_KEY]:
         pending_query = st.session_state[PENDING_QUERY_KEY]
-        with st.spinner("正在執行 LangGraph 檢索流程..."):
-            try:
-                response = run_query(**pending_query)
-            except Exception as exc:
-                response = build_error_response(exc)
-            finish_query(response)
+        response = {}
+        status_box = st.status("正在準備 LangGraph 查詢...", expanded=True)
+        progress_bar = st.progress(0, text="準備中")
+
+        try:
+            for node_name, partial_response in stream_query(**pending_query):
+                response = partial_response
+                completed_steps = response.get("steps", [])
+                progress_value = min(len(completed_steps) / len(NODE_ORDER), 1.0)
+                node_label = display_node_label(node_name)
+                progress_bar.progress(
+                    progress_value,
+                    text=f"已完成：{node_label}",
+                )
+                status_box.write(f"完成節點：{node_label}")
+
+                if node_name == "rewrite_query_for_retrieval" and response.get("rewrite_status"):
+                    status_box.write(response["rewrite_status"])
+                elif node_name == "retrieve_from_chroma":
+                    status_box.write(
+                        f"Chroma 已取回 {len(response.get('retrieved', []))} 個候選片段。"
+                    )
+                elif node_name == "rank_and_select_context":
+                    status_box.write(
+                        f"相近度判斷後選用 {len(response.get('selected', []))} 個片段。"
+                    )
+                elif node_name == "generate_answer":
+                    status_box.write(
+                        f"回答模式：{display_answer_mode(response.get('answer_mode', ''))}"
+                    )
+
+            if not response:
+                response = build_error_response(RuntimeError("LangGraph 沒有回傳結果。"))
+                status_box.update(label="LangGraph 查詢沒有回傳結果", state="error")
+            else:
+                progress_bar.progress(1.0, text="查詢完成")
+                status_box.update(label="LangGraph 查詢完成", state="complete")
+        except Exception as exc:
+            response = build_error_response(exc)
+            status_box.update(label="LangGraph 查詢失敗", state="error")
+
+        finish_query(response)
     else:
         response = st.session_state.get(LAST_RESPONSE_KEY) or {}
+
+    render_processing_panel(response, running=st.session_state[QUERY_RUNNING_KEY])
 
     if not response:
         if df.empty:
