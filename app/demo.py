@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -14,6 +15,8 @@ from app.config import (
     COLLECTION_NAME,
     DATA_DIR,
     EMBEDDING_MODEL,
+    GEMINI_API_KEY_ENV,
+    GEMINI_MODEL,
     OLLAMA_MODEL,
 )
 from app.ingest import build_vector_db
@@ -79,10 +82,12 @@ def list_source_files():
 
 def display_answer_mode(mode: str) -> str:
     labels = {
+        "Gemini RAG": "Gemini RAG",
         "Local LLM RAG": "本機 LLM RAG",
         "Extractive RAG": "來源式 RAG",
         "Extractive RAG Fallback": "來源式 RAG 備援",
-        "No Context": "無可用內容",
+        "No Context": "資料庫無此答案",
+        "Error": "查詢錯誤",
     }
     return labels.get(mode, mode or "無資料")
 
@@ -96,8 +101,54 @@ def display_match_label(label: str) -> str:
     return labels.get(label, label or "無資料")
 
 
+QUERY_RUNNING_KEY = "query_running"
+PENDING_QUERY_KEY = "pending_query"
+LAST_RESPONSE_KEY = "last_response"
+
+
+def init_session_state():
+    st.session_state.setdefault(QUERY_RUNNING_KEY, False)
+    st.session_state.setdefault(PENDING_QUERY_KEY, None)
+    st.session_state.setdefault(LAST_RESPONSE_KEY, None)
+
+
+def start_query():
+    st.session_state[PENDING_QUERY_KEY] = {
+        "question": st.session_state.get("question_input", "").strip(),
+        "top_k": st.session_state.get("top_k_input", 4),
+        "use_gemini": st.session_state.get("use_gemini_toggle", True),
+        "gemini_api_key": st.session_state.get("gemini_api_key_input", ""),
+        "gemini_model": st.session_state.get("gemini_model_input", GEMINI_MODEL),
+        "use_llm": st.session_state.get("use_llm_toggle", True),
+        "llm_model": st.session_state.get("llm_model_input", OLLAMA_MODEL),
+    }
+    st.session_state[QUERY_RUNNING_KEY] = True
+
+
+def finish_query(response: dict):
+    st.session_state[LAST_RESPONSE_KEY] = response
+    st.session_state[PENDING_QUERY_KEY] = None
+    st.session_state[QUERY_RUNNING_KEY] = False
+    st.rerun()
+
+
+def build_error_response(exc: Exception) -> dict:
+    return {
+        "answer": f"查詢時發生錯誤：{exc}",
+        "answer_mode": "Error",
+        "confidence_label": "Low",
+        "retrieved": [],
+        "selected": [],
+        "steps": [],
+        "llm_error": str(exc),
+    }
+
+
+init_session_state()
+controls_disabled = st.session_state[QUERY_RUNNING_KEY]
+
 st.title("Aegis Knowledge Core")
-st.caption("LangChain + LangGraph + Chroma 本機 RAG 知識庫展示")
+st.caption("LangChain + LangGraph + Chroma + Gemini API + Ollama 本機備援 RAG 知識庫展示")
 
 with st.sidebar:
     st.header("知識庫設定")
@@ -115,11 +166,49 @@ with st.sidebar:
         st.warning("data/ 目前沒有 .txt 文件")
 
     st.divider()
-    st.subheader("本機 LLM")
-    llm_model = st.text_input("Ollama 模型", value=OLLAMA_MODEL)
+    st.subheader("Gemini API")
+    gemini_model = st.text_input(
+        "Gemini 模型",
+        value=GEMINI_MODEL,
+        key="gemini_model_input",
+        disabled=controls_disabled,
+    )
+    gemini_api_key_input = st.text_input(
+        "Gemini API Key",
+        value="",
+        type="password",
+        placeholder=f"可留空使用環境變數 {GEMINI_API_KEY_ENV}",
+        key="gemini_api_key_input",
+        disabled=controls_disabled,
+    )
+    use_gemini = st.toggle(
+        "優先使用 Gemini API",
+        value=True,
+        key="use_gemini_toggle",
+        disabled=controls_disabled,
+    )
+
+    if gemini_api_key_input.strip() or os.getenv(GEMINI_API_KEY_ENV):
+        st.success(f"已偵測到 {GEMINI_API_KEY_ENV}")
+    else:
+        st.warning(f"尚未設定 {GEMINI_API_KEY_ENV}，會自動改用下一層備援")
+
+    st.divider()
+    st.subheader("本機 LLM 備援")
+    llm_model = st.text_input(
+        "Ollama 模型",
+        value=OLLAMA_MODEL,
+        key="llm_model_input",
+        disabled=controls_disabled,
+    )
 
     llm_status = check_local_llm(model=llm_model)
-    use_llm = st.toggle("使用 Ollama 生成回答", value=llm_status.available)
+    use_llm = st.toggle(
+        "使用 Ollama 作為備援",
+        value=llm_status.available,
+        key="use_llm_toggle",
+        disabled=controls_disabled,
+    )
     if llm_status.available:
         st.success(llm_status.message)
     else:
@@ -130,12 +219,15 @@ with st.sidebar:
         )
 
     st.divider()
-    if st.button("重建 Chroma 索引", width="stretch"):
+    if st.button("重建 Chroma 索引", width="stretch", disabled=controls_disabled):
         with st.spinner("正在讀取文件、切分文件片段，並重建 Chroma..."):
             build_vector_db(reset=True)
             clear_runtime_caches()
         st.success("Chroma 索引已重建")
         st.rerun()
+
+    if controls_disabled:
+        st.info("正在生成回答，控制項已暫時鎖定。")
 
 
 df = build_embedding_dataframe()
@@ -148,7 +240,7 @@ with metric_2:
 with metric_3:
     st.metric("流程節點", 4)
 with metric_4:
-    st.metric("執行模式", "Ollama" if use_llm else "本機檢索")
+    st.metric("執行模式", "Gemini 優先" if use_gemini else "本機備援")
 
 st.divider()
 
@@ -160,42 +252,54 @@ with query_col:
         "問題",
         value="Aegis Knowledge Core 可以解決什麼問題？",
         height=92,
+        key="question_input",
+        disabled=controls_disabled,
     )
 
-    top_k = st.slider("取回文件數", min_value=1, max_value=6, value=4)
-    run_button = st.button("執行 LangGraph 查詢", type="primary", width="stretch")
+    top_k = st.slider(
+        "取回文件數",
+        min_value=1,
+        max_value=6,
+        value=4,
+        key="top_k_input",
+        disabled=controls_disabled,
+    )
+    st.button(
+        "正在生成回答..." if controls_disabled else "執行 LangGraph 查詢",
+        type="primary",
+        width="stretch",
+        disabled=controls_disabled or df.empty or not question.strip(),
+        on_click=start_query,
+    )
+
+    if controls_disabled:
+        st.info("請稍候，回答完成前無法修改問題或再次送出。")
 
     st.markdown("#### LangGraph 查詢流程")
     st.code(
-        "使用者問題 -> Chroma 檢索 -> 排序選取 -> 組合 RAG 提示詞 -> 本機 LLM / 備援回答",
+        "使用者問題 -> Chroma 檢索 -> 相近度判斷 -> 組合 RAG 提示詞 -> Gemini API -> Ollama 備援 -> 來源式備援",
         language="text",
     )
 
 with evidence_col:
     st.subheader("RAG 回答")
 
-    if run_button:
+    if st.session_state[QUERY_RUNNING_KEY] and st.session_state[PENDING_QUERY_KEY]:
+        pending_query = st.session_state[PENDING_QUERY_KEY]
         with st.spinner("正在執行 LangGraph 檢索流程..."):
-            response = run_query(
-                question,
-                top_k=top_k,
-                use_llm=use_llm,
-                llm_model=llm_model,
-            )
+            try:
+                response = run_query(**pending_query)
+            except Exception as exc:
+                response = build_error_response(exc)
+            finish_query(response)
     else:
-        response = (
-            run_query(
-                question,
-                top_k=top_k,
-                use_llm=use_llm,
-                llm_model=llm_model,
-            )
-            if not df.empty
-            else {}
-        )
+        response = st.session_state.get(LAST_RESPONSE_KEY) or {}
 
     if not response:
-        st.warning("Chroma 裡目前沒有資料。請先在側邊欄重建索引，或執行 python -m app.ingest。")
+        if df.empty:
+            st.warning("Chroma 裡目前沒有資料。請先在側邊欄重建索引，或執行 python -m app.ingest。")
+        else:
+            st.info("輸入問題後，按下「執行 LangGraph 查詢」開始查詢。")
     else:
         st.markdown(response["answer"])
 
@@ -209,12 +313,25 @@ with evidence_col:
         with result_metric_4:
             st.metric("回答模式", display_answer_mode(response.get("answer_mode", "")))
 
+        if response.get("gemini_status") or response.get("llm_status"):
+            with st.expander("LLM 連線與備援狀態", expanded=False):
+                if response.get("gemini_status"):
+                    st.write(response["gemini_status"])
+                if response.get("llm_status"):
+                    st.write(response["llm_status"])
+                if response.get("llm_error"):
+                    st.code(response["llm_error"], language="text")
+
         if response.get("rag_prompt"):
-            with st.expander("送給本機 LLM 的 RAG 提示詞", expanded=False):
+            with st.expander("送給 Gemini / 本機 LLM 的 RAG 提示詞", expanded=False):
                 st.code(response["rag_prompt"], language="text")
 
         st.markdown("#### 引用依據")
-        for item in response.get("retrieved", []):
+        selected_items = response.get("selected", [])
+        if not selected_items:
+            st.info("本次沒有選用文件片段作為回答依據。")
+
+        for item in selected_items:
             expanded = item["rank"] == 1
             with st.expander(
                 f"排序 {item['rank']} | {item['source']}#chunk-{item['chunk_id']} | 距離 {item['distance']}",
@@ -290,6 +407,7 @@ st.markdown(
 - 使用 LangChain 讀取本機文件、切分文件片段、建立 embeddings，並串接 Chroma。
 - 使用 Chroma 保存本機向量資料庫，不需要額外啟動外部資料庫服務。
 - 使用 LangGraph 將檢索、排序、提示詞組合與回答生成拆成清楚節點。
+- 使用 Gemini API 優先生成回答，額度用完或不可用時自動切換到 Ollama 本機 LLM。
 - 使用 Streamlit 與 Plotly 同時展示 RAG 回答、引用依據與 embeddings 語意分布。
 """
 )

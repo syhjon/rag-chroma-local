@@ -8,10 +8,14 @@ from app.config import (
     CHROMA_DIR,
     COLLECTION_NAME,
     DEFAULT_TOP_K,
+    GEMINI_MODEL,
+    MAX_RELEVANT_DISTANCE,
+    NO_ANSWER_MESSAGE,
     OLLAMA_BASE_URL,
     OLLAMA_MODEL,
 )
 from app.embeddings import create_embedding_model
+from app.gemini_llm import GeminiApiError, generate_with_gemini
 from app.local_llm import check_local_llm, generate_with_ollama
 
 
@@ -28,6 +32,9 @@ class RetrievalItem(TypedDict):
 class GraphState(TypedDict, total=False):
     question: str
     top_k: int
+    use_gemini: bool
+    gemini_api_key: str
+    gemini_model: str
     use_llm: bool
     llm_model: str
     retrieved: List[RetrievalItem]
@@ -37,8 +44,11 @@ class GraphState(TypedDict, total=False):
     answer_mode: str
     sources: List[str]
     confidence_label: str
+    gemini_status: str
+    gemini_error: str
     llm_status: str
     llm_error: str
+    no_answer_reason: str
     steps: List[str]
 
 
@@ -127,26 +137,48 @@ def retrieve_from_chroma(state: GraphState) -> GraphState:
 
 def rank_and_select_context(state: GraphState) -> GraphState:
     retrieved = state.get("retrieved", [])
-    selected = retrieved[: min(3, len(retrieved))]
+    top_distance = retrieved[0]["distance"] if retrieved else None
+    confidence_label = "Low"
+
+    if top_distance is None:
+        selected = []
+        no_answer_reason = "Chroma 沒有取回任何文件片段。"
+    elif top_distance > MAX_RELEVANT_DISTANCE:
+        selected = []
+        no_answer_reason = (
+            f"最接近的文件距離為 {top_distance}，高於門檻 {MAX_RELEVANT_DISTANCE}。"
+        )
+    else:
+        selected = retrieved[: min(3, len(retrieved))]
+        no_answer_reason = ""
 
     top_confidence = selected[0]["confidence"] if selected else 0
-    if top_confidence >= 0.7:
+    if top_confidence >= 0.7 and not no_answer_reason:
         confidence_label = "High"
-    elif top_confidence >= 0.45:
+    elif top_confidence >= 0.45 and not no_answer_reason:
         confidence_label = "Medium"
-    else:
-        confidence_label = "Low"
 
     return {
         **state,
         "selected": selected,
         "confidence_label": confidence_label,
+        "no_answer_reason": no_answer_reason,
         "steps": [*state.get("steps", []), "rank_and_select_context"],
     }
 
 
 def _format_sources(selected: List[RetrievalItem]) -> List[str]:
     return [f"{item['source']}#chunk-{item['chunk_id']}" for item in selected]
+
+
+def _append_sources(answer: str, sources: List[str]) -> str:
+    if sources and not any(source in answer for source in sources):
+        return f"{answer.rstrip()}\n\n引用來源：{', '.join(sources)}"
+    return answer
+
+
+def _join_status(*messages: str) -> str:
+    return "\n".join(message for message in messages if message)
 
 
 def _build_extractive_answer(selected: List[RetrievalItem]) -> str:
@@ -179,8 +211,9 @@ def build_rag_prompt(state: GraphState) -> GraphState:
             f"使用者問題：{state['question']}\n\n"
             "可用內部文件內容：\n"
             + "\n\n---\n\n".join(context_blocks)
-            + "\n\n請用繁體中文回答。若文件沒有足夠資訊，請明確說明不足，"
-            "不要使用文件外的知識。回答最後列出引用來源。"
+            + "\n\n請用繁體中文回答。若文件沒有足夠資訊，"
+            f"請只回覆「{NO_ANSWER_MESSAGE}」。不要使用文件外的知識。"
+            "回答最後列出引用來源。"
         )
 
     return {
@@ -191,45 +224,70 @@ def build_rag_prompt(state: GraphState) -> GraphState:
     }
 
 
-def generate_with_local_llm(state: GraphState) -> GraphState:
+def generate_answer(state: GraphState) -> GraphState:
     selected = state.get("selected", [])
+    step_name = "generate_answer"
 
     if not selected:
         return {
             **state,
-            "answer": (
-                "目前 Chroma collection 中沒有找到足夠內容。請先執行 "
-                "`python -m app.ingest` 重建向量資料庫，或把更多 .txt 文件放進 data/。"
-            ),
+            "answer": NO_ANSWER_MESSAGE,
             "answer_mode": "No Context",
-            "steps": [*state.get("steps", []), "generate_with_local_llm"],
+            "steps": [*state.get("steps", []), step_name],
         }
 
-    if not state.get("use_llm", False):
+    sources = state.get("sources", [])
+    gemini_status = ""
+    gemini_error = ""
+
+    if state.get("use_gemini", True):
+        gemini_model = state.get("gemini_model") or GEMINI_MODEL
+        try:
+            answer = generate_with_gemini(
+                state.get("rag_prompt", ""),
+                model=gemini_model,
+                api_key=state.get("gemini_api_key") or None,
+            )
+            return {
+                **state,
+                "answer": _append_sources(answer, sources),
+                "answer_mode": "Gemini RAG",
+                "gemini_status": f"Gemini API 已成功使用模型 {gemini_model} 生成回答。",
+                "steps": [*state.get("steps", []), step_name],
+            }
+        except GeminiApiError as exc:
+            gemini_error = str(exc)
+            if exc.resource_exhausted:
+                gemini_status = "Gemini API 額度已用完（429 RESOURCE_EXHAUSTED），已切換到本機 LLM 備援。"
+            else:
+                gemini_status = f"Gemini API 無法使用，已切換到本機 LLM 備援。原因：{exc}"
+    else:
+        gemini_status = "Gemini API 已停用，改用下一層備援。"
+
+    if not state.get("use_llm", True):
         return {
             **state,
             "answer": _build_extractive_answer(selected),
             "answer_mode": "Extractive RAG",
-            "llm_status": "Local LLM disabled",
-            "steps": [*state.get("steps", []), "generate_with_local_llm"],
+            "gemini_status": gemini_status,
+            "gemini_error": gemini_error,
+            "llm_status": "本機 LLM 備援已停用。",
+            "steps": [*state.get("steps", []), step_name],
         }
 
     llm_model = state.get("llm_model") or OLLAMA_MODEL
     status = check_local_llm(model=llm_model, base_url=OLLAMA_BASE_URL)
 
     if not status.available:
-        fallback_answer = _build_extractive_answer(selected)
         return {
             **state,
-            "answer": (
-                f"Local LLM 尚未就緒，已自動使用 extractive RAG fallback。\n\n"
-                f"狀態：{status.message}\n\n"
-                f"{fallback_answer}"
-            ),
+            "answer": _build_extractive_answer(selected),
             "answer_mode": "Extractive RAG Fallback",
-            "llm_status": status.message,
-            "llm_error": status.message,
-            "steps": [*state.get("steps", []), "generate_with_local_llm"],
+            "gemini_status": gemini_status,
+            "gemini_error": gemini_error,
+            "llm_status": _join_status(gemini_status, f"本機 LLM 不可用：{status.message}"),
+            "llm_error": _join_status(gemini_error, status.message),
+            "steps": [*state.get("steps", []), step_name],
         }
 
     try:
@@ -238,30 +296,26 @@ def generate_with_local_llm(state: GraphState) -> GraphState:
             model=llm_model,
             base_url=OLLAMA_BASE_URL,
         )
-        sources = state.get("sources", [])
-        if sources and not any(source in answer for source in sources):
-            answer = f"{answer.rstrip()}\n\n引用來源：{', '.join(sources)}"
     except Exception as exc:
-        fallback_answer = _build_extractive_answer(selected)
         return {
             **state,
-            "answer": (
-                f"Local LLM 生成時發生錯誤，已自動使用 extractive RAG fallback。\n\n"
-                f"錯誤：{exc}\n\n"
-                f"{fallback_answer}"
-            ),
+            "answer": _build_extractive_answer(selected),
             "answer_mode": "Extractive RAG Fallback",
-            "llm_status": status.message,
-            "llm_error": str(exc),
-            "steps": [*state.get("steps", []), "generate_with_local_llm"],
+            "gemini_status": gemini_status,
+            "gemini_error": gemini_error,
+            "llm_status": _join_status(gemini_status, f"本機 LLM 生成失敗：{exc}"),
+            "llm_error": _join_status(gemini_error, str(exc)),
+            "steps": [*state.get("steps", []), step_name],
         }
 
     return {
         **state,
-        "answer": answer,
+        "answer": _append_sources(answer, sources),
         "answer_mode": "Local LLM RAG",
-        "llm_status": status.message,
-        "steps": [*state.get("steps", []), "generate_with_local_llm"],
+        "gemini_status": gemini_status,
+        "gemini_error": gemini_error,
+        "llm_status": _join_status(gemini_status, status.message),
+        "steps": [*state.get("steps", []), step_name],
     }
 
 
@@ -271,13 +325,13 @@ def build_retrieval_graph():
     workflow.add_node("retrieve_from_chroma", retrieve_from_chroma)
     workflow.add_node("rank_and_select_context", rank_and_select_context)
     workflow.add_node("build_rag_prompt", build_rag_prompt)
-    workflow.add_node("generate_with_local_llm", generate_with_local_llm)
+    workflow.add_node("generate_answer", generate_answer)
 
     workflow.set_entry_point("retrieve_from_chroma")
     workflow.add_edge("retrieve_from_chroma", "rank_and_select_context")
     workflow.add_edge("rank_and_select_context", "build_rag_prompt")
-    workflow.add_edge("build_rag_prompt", "generate_with_local_llm")
-    workflow.add_edge("generate_with_local_llm", END)
+    workflow.add_edge("build_rag_prompt", "generate_answer")
+    workflow.add_edge("generate_answer", END)
 
     return workflow.compile()
 
@@ -290,7 +344,10 @@ def get_retrieval_graph():
 def run_query(
     question: str,
     top_k: int = DEFAULT_TOP_K,
-    use_llm: bool = False,
+    use_gemini: bool = True,
+    gemini_api_key: str = "",
+    gemini_model: str = GEMINI_MODEL,
+    use_llm: bool = True,
     llm_model: str = OLLAMA_MODEL,
 ) -> GraphState:
     graph = get_retrieval_graph()
@@ -298,6 +355,9 @@ def run_query(
         {
             "question": question,
             "top_k": top_k,
+            "use_gemini": use_gemini,
+            "gemini_api_key": gemini_api_key,
+            "gemini_model": gemini_model,
             "use_llm": use_llm,
             "llm_model": llm_model,
             "steps": [],
